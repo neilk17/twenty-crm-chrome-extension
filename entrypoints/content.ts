@@ -1,4 +1,4 @@
-import { scrapeCurrentPage } from '../utils/linkedin-scraper';
+import { scrapeCurrentPage } from '../lib/linkedin-scraper';
 
 export default defineContentScript({
   matches: ['*://*.linkedin.com/in/*', '*://*.linkedin.com/company/*'],

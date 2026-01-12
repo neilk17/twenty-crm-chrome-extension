@@ -1,5 +1,5 @@
-import { TwentyApiClient, extractTokenFromCookie } from '../utils/twenty-api';
-import { getSettings, saveSettings, addToRecentCaptures, getRecentCaptures } from '../utils/storage';
+import { TwentyApiClient, extractTokenFromCookie } from '../lib/twenty-api';
+import { getSettings, saveSettings, addToRecentCaptures, getRecentCaptures } from '../lib/storage';
 import type { ExtensionMessage, ExtensionResponse, LinkedInProfileData, LinkedInCompanyData } from '../types';
 
 // Cache for API client
@@ -217,7 +217,7 @@ async function testConnection(): Promise<{ connected: boolean; error?: string }>
   } catch (err) {
     console.error('Test connection failed:', err);
     const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-    
+
     // Provide more specific error messages
     if (errorMessage.includes('not configured')) {
       return { connected: false, error: 'Twenty URL is not configured. Please enter your Twenty URL.' };
@@ -228,7 +228,7 @@ async function testConnection(): Promise<{ connected: boolean; error?: string }>
     if (errorMessage.includes('HTTP error')) {
       return { connected: false, error: 'Could not reach your Twenty instance. Please check the URL and ensure it is accessible.' };
     }
-    
+
     return { connected: false, error: `Connection failed: ${errorMessage}` };
   }
 }
