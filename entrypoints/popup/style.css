@@ -1,6 +1,6 @@
+@import "tailwindcss";
 * {
   margin: 0;
-  padding: 0;
   box-sizing: border-box;
 }
 
@@ -11,7 +11,6 @@ body {
   min-height: 400px;
 }
 
-#app {
-  min-width: 360px;
+#app { min-width: 360px;
   min-height: 400px;
 }
