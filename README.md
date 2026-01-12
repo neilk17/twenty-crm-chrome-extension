@@ -1,10 +1,13 @@
-# Twenty CRM - LinkedIn Capture Extension
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-A Chrome extension to capture LinkedIn profiles and companies directly into your self-hosted [Twenty CRM](https://twenty.com).
+# Twenty CRM Chrome Extension
 
+Install this Chrome extension and manage your Twenty CRM workspace from Linkedin, Gmail and anywhere on the web.
+
+Thanks to [https://github.com/JhumanJ/twenty-crm-extension](https://github.com/JhumanJ/twenty-crm-extension) for the base extension which this is a fork of.
 ---
 
-## 📥 Download & Install
+##  Downloading the Extension
 
 ### Quick Install (Recommended)
 
@@ -83,8 +86,8 @@ Same process - visit any LinkedIn company page (`linkedin.com/company/name`)
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/twenty-crm-extension.git
-cd twenty-crm-extension
+git clone https://github.com/neilk17/twenty-crm-chrome-extension.git
+cd twenty-crm-chrome-extension
 
 # Install dependencies
 npm install
@@ -102,42 +105,6 @@ npm run zip
 The built extension is in `.output/chrome-mv3/`
 
 ---
-
-## 🏷️ Creating a Release
-
-**Option 1: Git Tag**
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-**Option 2: Manual**
-
-1. Go to GitHub → Actions → "Build and Release Extension"
-2. Click "Run workflow"
-3. Enter version (e.g., `v1.0.0`)
-
-GitHub Actions will automatically build and create a release with the ZIP file.
-
----
-
-## 🔧 Requirements
-
-- Chrome or Chromium-based browser
-- Self-hosted Twenty CRM instance
-- Logged into Twenty CRM in the same browser
-
----
-
-## ❓ Troubleshooting
-
-| Issue                     | Solution                                                             |
-| ------------------------- | -------------------------------------------------------------------- |
-| "Failed to save settings" | Check your Twenty URL is correct and you're logged in                |
-| Button not appearing      | Refresh the LinkedIn page, check extension is enabled                |
-| Profile photo not showing | Check Twenty's file storage is configured                            |
-| Company not created       | Headline may not have recognizable pattern (`at/chez/@/bei` Company) |
 
 ### Debug Logs
 

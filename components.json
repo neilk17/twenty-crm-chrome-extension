@@ -5,7 +5,7 @@
   "tsx": true,
   "tailwind": {
     "config": "",
-    "css": "src/styles/globals.css",
+    "css": "entrypoints/sidepanel/style.css",
     "baseColor": "neutral",
     "cssVariables": true,
     "prefix": ""
