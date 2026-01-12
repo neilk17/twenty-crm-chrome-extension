@@ -149,7 +149,7 @@ GitHub Actions will automatically build and create a release with the ZIP file.
 ## 📚 Tech Stack
 
 - [WXT](https://wxt.dev/) - Web Extension Framework
-- [Vue 3](https://vuejs.org/) - Popup UI
+- [React](https://react.dev/) - Sidepanel UI
 - TypeScript
 - Twenty CRM GraphQL API
 

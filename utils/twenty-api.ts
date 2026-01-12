@@ -221,7 +221,7 @@ export class TwentyApiClient {
 
       const blob = await response.blob();
       console.log('[Twenty] Image fetched, size:', blob.size, 'type:', blob.type);
-      
+
       const finalFilename = filename || `profile-${Date.now()}.jpg`;
 
       // GraphQL multipart upload format (Apollo Upload spec)
@@ -252,7 +252,7 @@ export class TwentyApiClient {
 
       const uploadUrl = `${this.baseUrl}/graphql`;
       console.log('[Twenty] Uploading via GraphQL to:', uploadUrl);
-      
+
       const uploadResponse = await fetch(uploadUrl, {
         method: 'POST',
         headers: {
@@ -271,7 +271,7 @@ export class TwentyApiClient {
 
       const result = await uploadResponse.json();
       console.log('[Twenty] Upload result:', result);
-      
+
       if (result.errors?.length) {
         console.error('[Twenty] GraphQL errors:', result.errors);
         return null;
@@ -303,17 +303,34 @@ export class TwentyApiClient {
       throw new Error('No authentication token set');
     }
 
-    const response = await fetch(`${this.baseUrl}/graphql`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.token}`,
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/graphql`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.token}`,
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+    } catch (error) {
+      // Network error (CORS, DNS, etc.)
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        throw new Error(`Cannot connect to ${this.baseUrl}. Please check your URL and ensure it is accessible.`);
+      }
+      throw error;
+    }
 
     if (!response.ok) {
-      throw new Error(`HTTP error: ${response.status}`);
+      let errorMessage = `HTTP error: ${response.status}`;
+      if (response.status === 401 || response.status === 403) {
+        errorMessage = 'Authentication failed. Please log in to your Twenty instance.';
+      } else if (response.status === 404) {
+        errorMessage = `GraphQL endpoint not found at ${this.baseUrl}/graphql. Please check your URL.`;
+      } else if (response.status >= 500) {
+        errorMessage = 'Server error. Please try again later.';
+      }
+      throw new Error(errorMessage);
     }
 
     return response.json();
@@ -323,7 +340,7 @@ export class TwentyApiClient {
     linkedinUrl: string
   ): Promise<PeopleQueryResult['people']['edges'][0]['node'] | null> {
     const normalizedUrl = this.normalizeLinkedInUrl(linkedinUrl);
-    
+
     const result = await this.graphqlRequest<PeopleQueryResult>(
       FIND_PERSON_BY_LINKEDIN,
       {
@@ -348,7 +365,7 @@ export class TwentyApiClient {
     linkedinUrl: string
   ): Promise<CompaniesQueryResult['companies']['edges'][0]['node'] | null> {
     const normalizedUrl = this.normalizeLinkedInUrl(linkedinUrl);
-    
+
     const result = await this.graphqlRequest<CompaniesQueryResult>(
       FIND_COMPANY_BY_LINKEDIN,
       {
@@ -393,7 +410,7 @@ export class TwentyApiClient {
     const exactMatch = companies.find(
       (c) => c.node.name.toLowerCase() === companyName.toLowerCase()
     );
-    
+
     if (exactMatch) {
       return exactMatch.node;
     }
@@ -456,7 +473,7 @@ export class TwentyApiClient {
   ): Promise<{ id: string; name: string; created: boolean }> {
     // First, try to find existing company by name
     const existingCompany = await this.findCompanyByName(companyName);
-    
+
     if (existingCompany) {
       console.log('Found existing company:', existingCompany.name);
       return { id: existingCompany.id, name: existingCompany.name, created: false };
@@ -578,9 +595,9 @@ export class TwentyApiClient {
           },
           domainName: data.website
             ? {
-                primaryLinkUrl: data.website,
-                primaryLinkLabel: 'Website',
-              }
+              primaryLinkUrl: data.website,
+              primaryLinkLabel: 'Website',
+            }
             : undefined,
           employees: data.employeeCount
             ? this.parseEmployeeCount(data.employeeCount)
@@ -606,9 +623,22 @@ export class TwentyApiClient {
       const result = await this.graphqlRequest<{ currentWorkspace: { id: string } }>(
         `query { currentWorkspace { id } }`
       );
-      return !result.errors?.length && !!result.data?.currentWorkspace;
-    } catch {
-      return false;
+
+      if (result.errors?.length) {
+        const errorMessage = result.errors[0].message;
+        console.error('[Twenty] Connection test GraphQL errors:', errorMessage);
+        // If it's an authentication error, throw it so it can be caught upstream
+        if (errorMessage.includes('Unauthorized') || errorMessage.includes('authentication') || errorMessage.includes('token')) {
+          throw new Error('Authentication failed. Please log in to your Twenty instance.');
+        }
+        return false;
+      }
+
+      return !!result.data?.currentWorkspace;
+    } catch (error) {
+      console.error('[Twenty] Connection test error:', error);
+      // Re-throw to preserve error details
+      throw error;
     }
   }
 
@@ -665,7 +695,7 @@ export class TwentyApiClient {
   ): Promise<void> {
     if (type === 'person' && data.type === 'person') {
       const personData = data as LinkedInProfileData;
-      
+
       // Find or create company if present
       let companyId: string | undefined;
       if (personData.currentCompany) {
@@ -733,9 +763,9 @@ export class TwentyApiClient {
             },
             domainName: companyData.website
               ? {
-                  primaryLinkUrl: companyData.website,
-                  primaryLinkLabel: 'Website',
-                }
+                primaryLinkUrl: companyData.website,
+                primaryLinkLabel: 'Website',
+              }
               : undefined,
             employees: companyData.employeeCount
               ? this.parseEmployeeCount(companyData.employeeCount)

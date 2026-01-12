@@ -9,23 +9,23 @@ let cachedTwentyUrl: string | null = null;
 // Get or create API client
 async function getApiClient(): Promise<TwentyApiClient> {
   const settings = await getSettings();
-  
+
   if (!settings.twentyUrl) {
     throw new Error('Twenty URL not configured');
   }
-  
+
   // Create new client if URL changed
   if (cachedTwentyUrl !== settings.twentyUrl || !apiClient) {
     apiClient = new TwentyApiClient(settings.twentyUrl);
     cachedTwentyUrl = settings.twentyUrl;
   }
-  
+
   // Get fresh token from cookie
   const token = await getAuthToken(settings.twentyUrl);
   if (!token) {
     throw new Error('No authentication token found. Please log in to Twenty CRM.');
   }
-  
+
   apiClient.setToken(token);
   return apiClient;
 }
@@ -48,31 +48,30 @@ async function getAuthToken(twentyUrl: string): Promise<string | null> {
       url: twentyUrl,
       name: 'tokenPair',
     });
-    
+
     console.log('Cookie lookup for', twentyUrl, ':', cookie ? 'found' : 'not found');
-    
+
     if (cookie?.value) {
       const decodedValue = decodeURIComponent(cookie.value);
       return extractTokenFromCookie(decodedValue);
     }
-    
-    // Also try without www
-    const altUrl = twentyUrl.includes('://www.') 
-      ? twentyUrl.replace('://www.', '://') 
+
+    const altUrl = twentyUrl.includes('://www.')
+      ? twentyUrl.replace('://www.', '://')
       : twentyUrl.replace('://', '://www.');
-    
+
     const altCookie = await browser.cookies.get({
       url: altUrl,
       name: 'tokenPair',
     });
-    
+
     console.log('Alt cookie lookup for', altUrl, ':', altCookie ? 'found' : 'not found');
-    
+
     if (altCookie?.value) {
       const decodedValue = decodeURIComponent(altCookie.value);
       return extractTokenFromCookie(decodedValue);
     }
-    
+
     return null;
   } catch (error) {
     console.error('Error getting auth token:', error);
@@ -154,7 +153,7 @@ async function checkDuplicate(
   scrapedData?: LinkedInProfileData | LinkedInCompanyData
 ): Promise<{ exists: boolean; record?: { id: string; type: string }; matchedBy?: string }> {
   const client = await getApiClient();
-  
+
   if (pageType === 'person') {
     const personData = scrapedData as LinkedInProfileData | undefined;
     return checkPersonDuplicate(
@@ -178,10 +177,10 @@ async function createRecord(
   data: LinkedInProfileData | LinkedInCompanyData
 ): Promise<{ id: string }> {
   const client = await getApiClient();
-  
+
   if (data.type === 'person') {
     const person = await client.createPerson(data);
-    
+
     // Save to recent captures
     await addToRecentCaptures({
       linkedinUrl: data.linkedinUrl,
@@ -189,11 +188,11 @@ async function createRecord(
       type: 'person',
       twentyId: person.id,
     });
-    
+
     return { id: person.id };
   } else {
     const company = await client.createCompany(data);
-    
+
     // Save to recent captures
     await addToRecentCaptures({
       linkedinUrl: data.linkedinUrl,
@@ -201,26 +200,43 @@ async function createRecord(
       type: 'company',
       twentyId: company.id,
     });
-    
+
     return { id: company.id };
   }
 }
 
 // Test connection to Twenty
-async function testConnection(): Promise<boolean> {
+async function testConnection(): Promise<{ connected: boolean; error?: string }> {
   try {
     const client = await getApiClient();
-    return await client.testConnection();
+    const connected = await client.testConnection();
+    if (!connected) {
+      return { connected: false, error: 'Failed to connect to Twenty API. Please check your URL and ensure you are logged in.' };
+    }
+    return { connected: true };
   } catch (err) {
     console.error('Test connection failed:', err);
-    return false;
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+    
+    // Provide more specific error messages
+    if (errorMessage.includes('not configured')) {
+      return { connected: false, error: 'Twenty URL is not configured. Please enter your Twenty URL.' };
+    }
+    if (errorMessage.includes('No authentication token') || errorMessage.includes('No authentication')) {
+      return { connected: false, error: 'Not logged in. Please open your Twenty instance and log in, then try again.' };
+    }
+    if (errorMessage.includes('HTTP error')) {
+      return { connected: false, error: 'Could not reach your Twenty instance. Please check the URL and ensure it is accessible.' };
+    }
+    
+    return { connected: false, error: `Connection failed: ${errorMessage}` };
   }
 }
 
 // Handle messages
 async function handleMessage(message: ExtensionMessage): Promise<ExtensionResponse> {
   console.log('Received message:', message.type);
-  
+
   try {
     switch (message.type) {
       case 'GET_AUTH_TOKEN': {
@@ -231,7 +247,7 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
         const token = await getAuthToken(settings.twentyUrl);
         return { success: !!token, data: { hasToken: !!token } };
       }
-      
+
       case 'CHECK_DUPLICATE': {
         const { linkedinUrl, pageType, scrapedData } = message.payload as {
           linkedinUrl: string;
@@ -241,24 +257,24 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
         const result = await checkDuplicate(linkedinUrl, pageType, scrapedData);
         return { success: true, data: result };
       }
-      
+
       case 'CREATE_RECORD': {
         const data = message.payload as LinkedInProfileData | LinkedInCompanyData;
         const result = await createRecord(data);
         return { success: true, data: result };
       }
-      
+
       case 'GET_SETTINGS': {
         const settings = await getSettings();
-        const hasToken = settings.twentyUrl 
-          ? !!(await getAuthToken(settings.twentyUrl)) 
+        const hasToken = settings.twentyUrl
+          ? !!(await getAuthToken(settings.twentyUrl))
           : false;
-        return { 
-          success: true, 
-          data: { ...settings, hasToken } 
+        return {
+          success: true,
+          data: { ...settings, hasToken }
         };
       }
-      
+
       case 'SAVE_SETTINGS': {
         const newSettings = message.payload as { twentyUrl?: string };
         console.log('Saving settings:', newSettings);
@@ -271,24 +287,28 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
         console.log('Settings saved successfully');
         return { success: true };
       }
-      
+
       case 'TEST_CONNECTION': {
-        const connected = await testConnection();
-        return { success: true, data: { connected } };
+        const result = await testConnection();
+        if (result.connected) {
+          return { success: true, data: { connected: true } };
+        } else {
+          return { success: false, error: result.error || 'Connection test failed' };
+        }
       }
-      
+
       case 'GET_RECENT_CAPTURES': {
         const captures = await getRecentCaptures();
         return { success: true, data: captures };
       }
-      
+
       case 'SEARCH_RECORDS': {
         const { query, type } = message.payload as { query: string; type: 'person' | 'company' };
         const client = await getApiClient();
         const results = await client.searchRecords(query, type);
         return { success: true, data: results };
       }
-      
+
       case 'UPDATE_RECORD': {
         const { id, type, data } = message.payload as {
           id: string;
@@ -299,15 +319,48 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
         await client.updateRecordWithLinkedInData(id, type, data);
         return { success: true, data: { id } };
       }
-      
+
+      case 'SCRAPE_PAGE': {
+        const { tabId } = message.payload as { tabId: number };
+        try {
+          // Execute script to scrape the page
+          const results = await browser.scripting.executeScript({
+            target: { tabId },
+            func: () => {
+              const linkedinUrl = window.location.href.split('?')[0];
+              const isPerson = linkedinUrl.includes('linkedin.com/in/');
+              const isCompany = linkedinUrl.includes('linkedin.com/company/');
+
+              if (!isPerson && !isCompany) {
+                return { type: null, data: null };
+              }
+
+              // For now, return the URL and type - we'll scrape in the content script
+              return {
+                type: isPerson ? 'person' : 'company',
+                url: linkedinUrl,
+              };
+            },
+          });
+
+          if (results && results[0]?.result) {
+            return { success: true, data: results[0].result };
+          }
+          return { success: false, error: 'Could not scrape page' };
+        } catch (error) {
+          console.error('Error scraping page:', error);
+          return { success: false, error: 'Could not access page' };
+        }
+      }
+
       default:
         return { success: false, error: 'Unknown message type' };
     }
   } catch (error) {
     console.error('Background error:', error);
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Unknown error' 
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
     };
   }
 }
@@ -322,6 +375,17 @@ export default defineBackground(() => {
       return true; // Indicates we will send a response asynchronously
     }
   );
-  
+
+  try {
+    if (browser.action && browser.action.onClicked) {
+      browser.action.onClicked.addListener((tab) => {
+        if (tab?.id && browser.sidePanel) {
+          browser.sidePanel.open({ tabId: tab.id });
+        }
+      });
+    }
+  } catch (error) {
+    console.warn('Could not set up action onClicked listener:', error);
+  }
   console.log('Twenty CRM Extension background loaded');
 });
