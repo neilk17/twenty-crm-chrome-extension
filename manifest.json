@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Twenty CRM - LinkedIn Capture",
+  "description": "Capture LinkedIn profiles and companies to your Twenty CRM",
+  "version": "1.0.0",
+  "permissions": ["storage", "cookies", "activeTab", "sidePanel"],
+  "host_permissions": ["*://*.linkedin.com/*", "*://*/*"],
+  "action": {
+    "default_title": "Twenty CRM - LinkedIn Capture"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.linkedin.com/company/*", "*://*.linkedin.com/in/*"],
+      "run_at": "document_idle",
+      "js": ["content-scripts/content.js"]
+    }
+  ]
+}
