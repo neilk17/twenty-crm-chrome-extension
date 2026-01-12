@@ -1,11 +1,8 @@
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-
 # Twenty CRM Chrome Extension
 
-Install this Chrome extension and manage your Twenty CRM workspace from Linkedin, Gmail and anywhere on the web.
+Install this Chrome extension and manage your Twenty CRM workspace from Linkedin, Gmail and anywhere on the web. 
 
 Thanks to [https://github.com/JhumanJ/twenty-crm-extension](https://github.com/JhumanJ/twenty-crm-extension) for the base extension which this is a fork of.
----
 
 ##  Downloading the Extension
 

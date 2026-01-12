@@ -633,16 +633,13 @@ export default function App() {
           )}
 
           {isConfigured && !hasToken && (
-            <section className="bg-amber-100 p-4 rounded-lg mx-[-20px] mb-5 px-5">
-              <p className="text-sm text-amber-800 mb-3">
+            <section className="mb-4">
+              <p className="text-sm text-muted-foreground mb-3">
                 Please log in to your Twenty instance to use the extension.
               </p>
-              <button
-                className="flex-1 px-4 py-2.5 border-none rounded-lg text-sm font-medium cursor-pointer transition-all hover:-translate-y-px hover:shadow-[0_4px_12px_rgba(99,102,241,0.4)] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none"
-                onClick={openTwenty}
-              >
+              <Button onClick={openTwenty} size="sm" className="w-full">
                 Open Twenty →
-              </button>
+              </Button>
             </section>
           )}
 
@@ -738,12 +735,12 @@ export default function App() {
             </div>
 
             {error && (
-              <div className="mt-3 px-3 py-2.5 rounded-lg text-[13px] bg-red-50 text-red-600">
+              <div className="mt-3 px-3 py-2.5 rounded-lg text-[13px] bg-sidebar text-red-600">
                 {error}
               </div>
             )}
             {success && (
-              <div className="mt-3 px-3 py-2.5 rounded-lg text-[13px] bg-green-50 text-green-600">
+              <div className="mt-3 px-3 py-2.5 rounded-lg text-[13px] bg-sidebar text-green-600">
                 {success}
               </div>
             )}

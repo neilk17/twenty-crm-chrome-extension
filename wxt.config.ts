@@ -14,21 +14,7 @@ export default defineConfig({
     permissions: ['storage', 'cookies', 'activeTab', 'sidePanel'],
     host_permissions: ['*://*.linkedin.com/*', '*://*/*'],
     action: {
-      default_icon: {
-        16: '/icon/16.png',
-        32: '/icon/32.png',
-        48: '/icon/48.png',
-        96: '/icon/96.png',
-        128: '/icon/128.png',
-      },
       default_title: 'Twenty CRM - LinkedIn Capture',
-    },
-    icons: {
-      16: '/icon/16.png',
-      32: '/icon/32.png',
-      48: '/icon/48.png',
-      96: '/icon/96.png',
-      128: '/icon/128.png',
     },
   },
 });
