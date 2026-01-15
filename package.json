@@ -2,7 +2,7 @@
   "name": "twenty-crm-linkedin-extension",
   "description": "Chrome extension to capture LinkedIn profiles and companies to Twenty CRM",
   "version": "1.0.0",
-  "license": "MIT",
+  "license": "AGPL-3.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",
