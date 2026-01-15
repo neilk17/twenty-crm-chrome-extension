@@ -76,6 +76,26 @@ const FIND_COMPANY_BY_NAME = `
   }
 `;
 
+const FIND_COMPANY_BY_DOMAIN = `
+  query FindCompanyByDomain($filter: CompanyFilterInput) {
+    companies(filter: $filter, first: 1) {
+      edges {
+        node {
+          id
+          name
+          linkedinLink {
+            primaryLinkUrl
+          }
+          domainName {
+            primaryLinkUrl
+            primaryLinkLabel
+          }
+        }
+      }
+    }
+  }
+`;
+
 const FIND_PERSON_BY_NAME = `
   query FindPersonByName($filter: PersonFilterInput) {
     people(filter: $filter, first: 5) {
@@ -419,6 +439,48 @@ export class TwentyApiClient {
     return companies[0]?.node || null;
   }
 
+  async findCompanyByDomain(
+    domain: string
+  ): Promise<CompaniesQueryResult['companies']['edges'][0]['node'] | null> {
+    // Normalize domain (remove protocol, www, etc.)
+    const normalizedDomain = domain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/^www\./, '');
+
+    // Search for company by domain (case-insensitive)
+    const result = await this.graphqlRequest<CompaniesQueryResult>(
+      FIND_COMPANY_BY_DOMAIN,
+      {
+        filter: {
+          domainName: {
+            primaryLinkUrl: {
+              ilike: `%${normalizedDomain}%`,
+            },
+          },
+        },
+      }
+    );
+
+    if (result.errors?.length) {
+      throw new Error(result.errors[0].message);
+    }
+
+    const companies = result.data?.companies.edges || [];
+    
+    // Try to find exact match by comparing normalized domains
+    const exactMatch = companies.find((c) => {
+      const companyDomain = c.node.domainName?.primaryLinkUrl;
+      if (!companyDomain) return false;
+      const normalizedCompanyDomain = companyDomain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/^www\./, '');
+      return normalizedCompanyDomain === normalizedDomain;
+    });
+
+    if (exactMatch) {
+      return exactMatch.node;
+    }
+
+    // Return first match if no exact match
+    return companies[0]?.node || null;
+  }
+
   async findPersonByName(
     firstName: string,
     lastName: string
@@ -589,15 +651,17 @@ export class TwentyApiClient {
       {
         input: {
           name: data.name,
-          linkedinLink: {
-            primaryLinkUrl: data.linkedinUrl,
-            primaryLinkLabel: 'LinkedIn',
-          },
+          linkedinLink: data.linkedinUrl
+            ? {
+                primaryLinkUrl: data.linkedinUrl,
+                primaryLinkLabel: 'LinkedIn',
+              }
+            : undefined,
           domainName: data.website
             ? {
-              primaryLinkUrl: data.website,
-              primaryLinkLabel: 'Website',
-            }
+                primaryLinkUrl: data.website,
+                primaryLinkLabel: 'Website',
+              }
             : undefined,
           employees: data.employeeCount
             ? this.parseEmployeeCount(data.employeeCount)

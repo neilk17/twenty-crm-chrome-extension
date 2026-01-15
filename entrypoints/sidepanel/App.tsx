@@ -17,11 +17,13 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getLinkedInPageType } from "../../lib/linkedin-scraper";
+import { getNormalizedDomain } from "../../lib/domain-extractor";
 import type {
   CaptureState,
   ExtensionResponse,
   LinkedInData,
   LinkedInProfileData,
+  DomainCompanyData,
 } from "../../types";
 
 type RecentCapture = {
@@ -147,7 +149,11 @@ export default function App() {
         const pageType = getLinkedInPageType(url);
         console.log("Page type:", pageType);
         if (pageType && tabs[0].id) {
+          // LinkedIn page - use existing flow
           await checkPageForCapture(tabs[0].id, url, pageType);
+        } else if (tabs[0].id) {
+          // Non-LinkedIn page - check for domain-based company
+          await checkDomainForCapture(tabs[0].id, url);
         } else {
           setCaptureState({ status: "idle" });
         }
@@ -236,41 +242,148 @@ export default function App() {
     }
   }
 
+  async function checkDomainForCapture(tabId: number, url: string) {
+    setIsCheckingPage(true);
+    setCaptureState({ status: "loading" });
+
+    try {
+      // Get domain from page
+      const domainResponse = (await browser.runtime.sendMessage({
+        type: "GET_DOMAIN_FROM_PAGE",
+        payload: { tabId },
+      })) as ExtensionResponse<{ domain: string; url: string }>;
+
+      if (!domainResponse.success || !domainResponse.data?.domain) {
+        setCaptureState({ status: "idle" });
+        return;
+      }
+
+      const domain = domainResponse.data.domain;
+
+      // Check for duplicate by domain
+      const duplicateResponse = (await browser.runtime.sendMessage({
+        type: "CHECK_DUPLICATE_BY_DOMAIN",
+        payload: { domain },
+      })) as ExtensionResponse<{
+        exists: boolean;
+        record?: { id: string; type: string };
+        matchedBy?: string;
+      }>;
+
+      if (duplicateResponse.success) {
+        if (duplicateResponse.data?.exists && duplicateResponse.data.record) {
+          setCaptureState({
+            status: "exists",
+            existingRecord: {
+              id: duplicateResponse.data.record.id,
+              type: duplicateResponse.data.record.type as "person" | "company",
+            },
+            data: {
+              type: "company",
+              domain,
+            } as DomainCompanyData,
+          });
+        } else {
+          setCaptureState({
+            status: "ready",
+            data: {
+              type: "company",
+              domain,
+            } as DomainCompanyData,
+          });
+        }
+      } else {
+        if (
+          duplicateResponse.error?.includes("not configured") ||
+          duplicateResponse.error?.includes("No authentication")
+        ) {
+          setCaptureState({ status: "idle", error: "Configure Twenty URL" });
+        } else {
+          setCaptureState({ status: "error", error: duplicateResponse.error });
+        }
+      }
+    } catch (err) {
+      console.error("Error checking domain:", err);
+      setCaptureState({ status: "error", error: "Failed to check domain" });
+    } finally {
+      setIsCheckingPage(false);
+    }
+  }
+
   async function handleCapture() {
     if (captureState.status !== "ready" || !captureState.data) return;
 
     setCaptureState({ ...captureState, status: "saving" });
 
     try {
-      const response = (await browser.runtime.sendMessage({
-        type: "CREATE_RECORD",
-        payload: captureState.data,
-      })) as ExtensionResponse<{ id: string }>;
-
-      if (response.success && response.data) {
-        setCaptureState({
-          status: "saved",
-          existingRecord: {
-            id: response.data.id,
-            type: captureState.data.type,
+      // Check if this is a domain-based company
+      if (captureState.data.type === "company" && "domain" in captureState.data) {
+        const domainData = captureState.data as DomainCompanyData;
+        const response = (await browser.runtime.sendMessage({
+          type: "CREATE_COMPANY_BY_DOMAIN",
+          payload: {
+            domain: domainData.domain,
+            companyName: domainData.name,
           },
-          data: captureState.data,
-        });
-        setSuccess("Added to Twenty CRM!");
-        setTimeout(() => setSuccess(null), 3000);
-        await loadRecentCaptures();
+        })) as ExtensionResponse<{ id: string }>;
 
-        // Update to exists state after a delay
-        setTimeout(() => {
-          setCaptureState((prev) => ({ ...prev, status: "exists" }));
-        }, 2000);
+        if (response.success && response.data) {
+          setCaptureState({
+            status: "saved",
+            existingRecord: {
+              id: response.data.id,
+              type: "company",
+            },
+            data: captureState.data,
+          });
+          setSuccess("Added to Twenty CRM!");
+          setTimeout(() => setSuccess(null), 3000);
+          await loadRecentCaptures();
+
+          // Update to exists state after a delay
+          setTimeout(() => {
+            setCaptureState((prev) => ({ ...prev, status: "exists" }));
+          }, 2000);
+        } else {
+          setCaptureState({
+            ...captureState,
+            status: "error",
+            error: response.error,
+          });
+          setError(response.error || "Failed to save");
+        }
       } else {
-        setCaptureState({
-          ...captureState,
-          status: "error",
-          error: response.error,
-        });
-        setError(response.error || "Failed to save");
+        // LinkedIn-based capture (existing flow)
+        const response = (await browser.runtime.sendMessage({
+          type: "CREATE_RECORD",
+          payload: captureState.data,
+        })) as ExtensionResponse<{ id: string }>;
+
+        if (response.success && response.data) {
+          setCaptureState({
+            status: "saved",
+            existingRecord: {
+              id: response.data.id,
+              type: captureState.data.type,
+            },
+            data: captureState.data,
+          });
+          setSuccess("Added to Twenty CRM!");
+          setTimeout(() => setSuccess(null), 3000);
+          await loadRecentCaptures();
+
+          // Update to exists state after a delay
+          setTimeout(() => {
+            setCaptureState((prev) => ({ ...prev, status: "exists" }));
+          }, 2000);
+        } else {
+          setCaptureState({
+            ...captureState,
+            status: "error",
+            error: response.error,
+          });
+          setError(response.error || "Failed to save");
+        }
       }
     } catch (err) {
       console.error("Error capturing:", err);
@@ -596,37 +709,93 @@ export default function App() {
                     <Sparkles />
                     <span>{getCaptureButtonText()}</span>
                   </Button>
-                  {captureState.status === "exists" && (
-                    <Button
-                      className="mt-2 w-full"
-                      variant="secondary"
-                      onClick={handleUpdate}
-                    >
-                      <RefreshCw className="size-4" />
-                      Refresh data from LinkedIn
-                    </Button>
-                  )}
+                  {captureState.status === "exists" &&
+                    captureState.data &&
+                    !("domain" in captureState.data) && (
+                      <Button
+                        className="mt-2 w-full"
+                        variant="secondary"
+                        onClick={handleUpdate}
+                      >
+                        <RefreshCw className="size-4" />
+                        Refresh data from LinkedIn
+                      </Button>
+                    )}
                 </div>
               ) : (
-                <div className="bg-sidebar rounded-lg p-4 border ">
-                  <div className="flex items-center gap-2 mb-2">
-                    <h3 className="text-sm font-semibold ">
-                      Not on a LinkedIn Page
-                    </h3>
-                  </div>
-                  <p className="text-xs  mb-3">
-                    Navigate to a LinkedIn profile or company page to capture
-                    it.
-                  </p>
-                  <Button
-                    onClick={checkCurrentTab}
-                    className="w-full"
-                    variant="outline"
-                    size="sm"
-                    title="Refresh"
-                  >
-                    Refresh Current Tab
-                  </Button>
+                <div className="bg-card rounded-lg p-4 border ">
+                  {captureState.data && "domain" in captureState.data ? (
+                    <>
+                      <div className="mb-3 flex flex-col gap-2">
+                        <div className="flex items-center gap-2">
+                          <Avatar>
+                            <AvatarFallback>
+                              <Building2 className="size-4" />
+                            </AvatarFallback>
+                          </Avatar>
+                          <h1 className="font-semibold text-xl">
+                            {(captureState.data as DomainCompanyData).domain}
+                          </h1>
+                        </div>
+                        <div>
+                          <p className="text-sm text-muted-foreground">
+                            Company Domain
+                          </p>
+                        </div>
+                      </div>
+                      <Button
+                        variant="default"
+                        className="w-full"
+                        onClick={() => {
+                          if (captureState.status === "ready") {
+                            handleCapture();
+                          } else if (
+                            captureState.status === "exists" ||
+                            captureState.status === "saved"
+                          ) {
+                            handleOpenInTwenty();
+                          } else if (
+                            captureState.status === "error" ||
+                            captureState.status === "idle"
+                          ) {
+                            checkCurrentTab();
+                          }
+                        }}
+                        disabled={
+                          captureState.status === "loading" ||
+                          captureState.status === "saving"
+                        }
+                      >
+                        {(captureState.status === "loading" ||
+                          captureState.status === "saving") && (
+                          <div className="w-4 h-4 border-2 border-border border-t-transparent rounded-full animate-spin"></div>
+                        )}
+                        <Sparkles />
+                        <span>{getCaptureButtonText()}</span>
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2 mb-2">
+                        <h3 className="text-sm font-semibold ">
+                          Not on a LinkedIn Page
+                        </h3>
+                      </div>
+                      <p className="text-xs  mb-3">
+                        Add a company by domain from this page, or navigate to a
+                        LinkedIn profile or company page to capture it.
+                      </p>
+                      <Button
+                        onClick={checkCurrentTab}
+                        className="w-full"
+                        variant="outline"
+                        size="sm"
+                        title="Check for Company Domain"
+                      >
+                        Check for Company Domain
+                      </Button>
+                    </>
+                  )}
                 </div>
               )}
             </section>

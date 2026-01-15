@@ -23,8 +23,14 @@ export type LinkedInCompanyData = {
 
 export type LinkedInData = LinkedInProfileData | LinkedInCompanyData;
 
-// Twenty CRM Types
-// Links composite type: primaryLinkUrl, primaryLinkLabel, secondaryLinks
+export type DomainCompanyData = {
+  type: 'company';
+  domain: string;
+  name?: string;
+};
+
+export type CompanyData = LinkedInCompanyData | DomainCompanyData;
+
 export type TwentyLinks = {
   primaryLinkUrl?: string;
   primaryLinkLabel?: string;
@@ -84,21 +90,24 @@ export type CaptureState = {
     type: 'person' | 'company';
   };
   error?: string;
-  data?: LinkedInData;
+  data?: LinkedInData | DomainCompanyData;
 };
 
 // Message Types for Extension Communication
 export type MessageType =
   | 'GET_AUTH_TOKEN'
   | 'CHECK_DUPLICATE'
+  | 'CHECK_DUPLICATE_BY_DOMAIN'
   | 'CREATE_RECORD'
+  | 'CREATE_COMPANY_BY_DOMAIN'
   | 'UPDATE_RECORD'
   | 'SEARCH_RECORDS'
   | 'GET_SETTINGS'
   | 'SAVE_SETTINGS'
   | 'TEST_CONNECTION'
   | 'GET_RECENT_CAPTURES'
-  | 'SCRAPE_PAGE';
+  | 'SCRAPE_PAGE'
+  | 'GET_DOMAIN_FROM_PAGE';
 
 export type ExtensionMessage = {
   type: MessageType;
