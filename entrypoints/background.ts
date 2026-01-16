@@ -1,6 +1,7 @@
 import { TwentyApiClient, extractTokenFromCookie } from '../lib/twenty-api';
 import { getSettings, saveSettings, addToRecentCaptures, getRecentCaptures } from '../lib/storage';
-import type { ExtensionMessage, ExtensionResponse, LinkedInProfileData, LinkedInCompanyData } from '../types';
+import { getNormalizedDomain } from '../lib/domain-extractor';
+import type { ExtensionMessage, ExtensionResponse, LinkedInProfileData, LinkedInCompanyData, DomainCompanyData } from '../types';
 
 // Cache for API client
 let apiClient: TwentyApiClient | null = null;
@@ -113,24 +114,40 @@ async function checkPersonDuplicate(
   return { exists: false };
 }
 
-// Check if a company already exists (by LinkedIn URL or name)
+// Check if a company already exists (by LinkedIn URL, domain, or name)
 async function checkCompanyDuplicate(
   client: TwentyApiClient,
-  linkedinUrl: string,
-  companyName?: string
+  linkedinUrl?: string,
+  companyName?: string,
+  domain?: string
 ): Promise<{ exists: boolean; record?: { id: string; type: string }; matchedBy?: string }> {
-  // First, try to find by LinkedIn URL
-  try {
-    const companyByLinkedIn = await client.findCompanyByLinkedInUrl(linkedinUrl);
-    if (companyByLinkedIn) {
-      console.log('Found company by LinkedIn URL:', companyByLinkedIn.id);
-      return { exists: true, record: { id: companyByLinkedIn.id, type: 'company' }, matchedBy: 'linkedin' };
+  // First, try to find by LinkedIn URL if provided
+  if (linkedinUrl) {
+    try {
+      const companyByLinkedIn = await client.findCompanyByLinkedInUrl(linkedinUrl);
+      if (companyByLinkedIn) {
+        console.log('Found company by LinkedIn URL:', companyByLinkedIn.id);
+        return { exists: true, record: { id: companyByLinkedIn.id, type: 'company' }, matchedBy: 'linkedin' };
+      }
+    } catch (error) {
+      console.error('Error searching company by LinkedIn URL:', error);
     }
-  } catch (error) {
-    console.error('Error searching company by LinkedIn URL:', error);
   }
 
-  // If not found by LinkedIn URL and we have name, try by name
+  // Try to find by domain if provided
+  if (domain) {
+    try {
+      const companyByDomain = await client.findCompanyByDomain(domain);
+      if (companyByDomain) {
+        console.log('Found company by domain:', companyByDomain.id, companyByDomain.name);
+        return { exists: true, record: { id: companyByDomain.id, type: 'company' }, matchedBy: 'domain' };
+      }
+    } catch (error) {
+      console.error('Error searching company by domain:', error);
+    }
+  }
+
+  // If not found by LinkedIn URL or domain and we have name, try by name
   if (companyName) {
     try {
       const companyByName = await client.findCompanyByName(companyName);
@@ -144,6 +161,14 @@ async function checkCompanyDuplicate(
   }
 
   return { exists: false };
+}
+
+// Check if a company exists by domain only
+async function checkCompanyDuplicateByDomain(
+  domain: string
+): Promise<{ exists: boolean; record?: { id: string; type: string }; matchedBy?: string }> {
+  const client = await getApiClient();
+  return checkCompanyDuplicate(client, undefined, undefined, domain);
 }
 
 // Check if a record already exists (broader matching)
@@ -203,6 +228,41 @@ async function createRecord(
 
     return { id: company.id };
   }
+}
+
+// Create a company by domain
+async function createCompanyByDomain(
+  domain: string,
+  companyName?: string
+): Promise<{ id: string }> {
+  const client = await getApiClient();
+
+  // Create company data with domain
+  const companyData: DomainCompanyData = {
+    type: 'company',
+    domain,
+    name: companyName || domain, // Use domain as name if no name provided
+  };
+
+  // Convert to LinkedInCompanyData format for API (without LinkedIn URL)
+  const apiData: LinkedInCompanyData = {
+    type: 'company',
+    linkedinUrl: '', // Empty LinkedIn URL for domain-only companies
+    name: companyData.name || domain,
+    website: `https://${domain}`, // Use domain as website URL
+  };
+
+  const company = await client.createCompany(apiData);
+
+  // Save to recent captures (using domain as identifier since there's no LinkedIn URL)
+  await addToRecentCaptures({
+    linkedinUrl: `domain:${domain}`, // Use domain as identifier
+    name: company.name,
+    type: 'company',
+    twentyId: company.id,
+  });
+
+  return { id: company.id };
 }
 
 // Test connection to Twenty
@@ -351,6 +411,49 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
           console.error('Error scraping page:', error);
           return { success: false, error: 'Could not access page' };
         }
+      }
+
+      case 'GET_DOMAIN_FROM_PAGE': {
+        const { tabId } = message.payload as { tabId: number };
+        try {
+          // Try to get domain from content script first
+          try {
+            const response = await browser.tabs.sendMessage(tabId, {
+              type: 'GET_DOMAIN_FROM_PAGE',
+            });
+            if (response && response.success) {
+              return { success: true, data: response.data };
+            }
+          } catch (e) {
+            // Content script might not be loaded, fall back to extracting from tab URL
+            console.log('Could not get domain from content script, extracting from tab URL');
+          }
+
+          // Fallback: extract domain from tab URL
+          const tab = await browser.tabs.get(tabId);
+          if (tab.url) {
+            const domain = getNormalizedDomain(tab.url);
+            if (domain) {
+              return { success: true, data: { domain, url: tab.url } };
+            }
+          }
+          return { success: false, error: 'Could not extract domain from URL' };
+        } catch (error) {
+          console.error('Error getting domain from page:', error);
+          return { success: false, error: 'Could not access page' };
+        }
+      }
+
+      case 'CHECK_DUPLICATE_BY_DOMAIN': {
+        const { domain } = message.payload as { domain: string };
+        const result = await checkCompanyDuplicateByDomain(domain);
+        return { success: true, data: result };
+      }
+
+      case 'CREATE_COMPANY_BY_DOMAIN': {
+        const { domain, companyName } = message.payload as { domain: string; companyName?: string };
+        const result = await createCompanyByDomain(domain, companyName);
+        return { success: true, data: result };
       }
 
       default:
