@@ -376,16 +376,13 @@ export default defineBackground(() => {
     }
   );
 
+  // Make clicking the extension icon open the side panel directly
   try {
-    if (browser.action && browser.action.onClicked) {
-      browser.action.onClicked.addListener((tab) => {
-        if (tab?.id && browser.sidePanel) {
-          browser.sidePanel.open({ tabId: tab.id });
-        }
-      });
+    if (browser.sidePanel) {
+      (browser.sidePanel as any).setPanelBehavior({ openPanelOnActionClick: true });
     }
   } catch (error) {
-    console.warn('Could not set up action onClicked listener:', error);
+    console.warn('Could not set side panel behavior:', error);
   }
   console.log('Twenty CRM Extension background loaded');
 });
