@@ -3,7 +3,7 @@ import { defineConfig } from 'wxt';
 export default defineConfig({
   manifest: {
     name: "Twenty CRM - LinkedIn Capture",
-    version: "1.0.2", // Increment version
+    version: "1.0.3", // Increment version
     description: "Quickly add LinkedIn profiles and companies to your Twenty CRM",
 
     icons: {
@@ -15,7 +15,8 @@ export default defineConfig({
 
     permissions: [
       "activeTab",
-      "storage"
+      "storage",
+      "cookies"
     ],
 
     // Only request LinkedIn access upfront

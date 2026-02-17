@@ -86,6 +86,48 @@ export default function App() {
     }
   }, [connectionStatus]);
 
+  function normalizeTwentyUrl(urlValue: string): string {
+    let url = urlValue.trim();
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      url = `https://${url}`;
+    }
+    return url.replace(/\/$/, "");
+  }
+
+  function getTwentyOriginPatterns(urlValue: string): string[] {
+    try {
+      const parsed = new URL(urlValue);
+      const protocol = parsed.protocol;
+      const hostnames = new Set<string>([parsed.hostname]);
+      if (parsed.hostname.startsWith("www.")) {
+        hostnames.add(parsed.hostname.replace(/^www\./, ""));
+      } else {
+        hostnames.add(`www.${parsed.hostname}`);
+      }
+      return Array.from(hostnames).map((hostname) => `${protocol}//${hostname}/*`);
+    } catch {
+      return [];
+    }
+  }
+
+  async function ensureTwentyPermission(urlValue: string): Promise<boolean> {
+    const origins = getTwentyOriginPatterns(urlValue);
+    if (origins.length === 0) {
+      return false;
+    }
+
+    try {
+      const hasPermission = await browser.permissions.contains({ origins });
+      if (hasPermission) {
+        return true;
+      }
+      return await browser.permissions.request({ origins });
+    } catch (err) {
+      console.error("Error requesting permission:", err);
+      return false;
+    }
+  }
+
   // Load settings on mount
   useEffect(() => {
     loadSettings();
@@ -425,12 +467,7 @@ export default function App() {
       return;
     }
 
-    // Normalize URL
-    let url = twentyUrl.trim();
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      url = "https://" + url;
-    }
-    url = url.replace(/\/$/, ""); // Remove trailing slash
+    const url = normalizeTwentyUrl(twentyUrl);
     setTwentyUrl(url);
 
     setIsSaving(true);
@@ -438,6 +475,12 @@ export default function App() {
     setSuccess(null);
 
     try {
+      const hasPermission = await ensureTwentyPermission(url);
+      if (!hasPermission) {
+        setError("Permission denied. Please allow access to your Twenty domain.");
+        return;
+      }
+
       const response = (await browser.runtime.sendMessage({
         type: "SAVE_SETTINGS",
         payload: { twentyUrl: url },
@@ -462,10 +505,23 @@ export default function App() {
   }
 
   async function testConnection() {
+    if (!twentyUrl) {
+      setError("Please enter your Twenty URL");
+      return;
+    }
+
     setIsTesting(true);
     setError(null);
 
     try {
+      const normalizedUrl = normalizeTwentyUrl(twentyUrl);
+      const hasPermission = await ensureTwentyPermission(normalizedUrl);
+      if (!hasPermission) {
+        setError("Permission denied. Please allow access to your Twenty domain.");
+        setIsConnected(false);
+        return;
+      }
+
       const response = (await browser.runtime.sendMessage({
         type: "TEST_CONNECTION",
       })) as ExtensionResponse<{ connected: boolean }>;

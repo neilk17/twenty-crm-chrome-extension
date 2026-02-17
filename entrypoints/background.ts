@@ -30,46 +30,60 @@ async function getApiClient(): Promise<TwentyApiClient> {
   return apiClient;
 }
 
-// Extract domain from URL for cookie access
-function extractDomain(url: string): string {
+function getTwentyCookieUrls(twentyUrl: string): { primaryUrl: string; alternateUrl: string | null } {
   try {
-    const urlObj = new URL(url);
-    return urlObj.hostname;
+    const parsed = new URL(twentyUrl);
+    const primaryUrl = parsed.origin;
+
+    const altHostname = parsed.hostname.startsWith('www.')
+      ? parsed.hostname.replace(/^www\./, '')
+      : `www.${parsed.hostname}`;
+
+    const alternateUrl = altHostname === parsed.hostname
+      ? null
+      : `${parsed.protocol}//${altHostname}`;
+
+    return { primaryUrl, alternateUrl };
   } catch {
-    return url;
+    const normalized = twentyUrl.replace(/\/$/, '');
+    const alternateUrl = normalized.includes('://www.')
+      ? normalized.replace('://www.', '://')
+      : normalized.includes('://')
+        ? normalized.replace('://', '://www.')
+        : null;
+    return { primaryUrl: normalized, alternateUrl };
   }
 }
 
 // Get auth token from Twenty's cookie
 async function getAuthToken(twentyUrl: string): Promise<string | null> {
   try {
-    // Try to get the tokenPair cookie from Twenty domain
-    const cookie = await browser.cookies.get({
-      url: twentyUrl,
-      name: 'tokenPair',
-    });
+    const { primaryUrl, alternateUrl } = getTwentyCookieUrls(twentyUrl);
+    const cookieUrls = Array.from(new Set([primaryUrl, alternateUrl].filter((url): url is string => !!url)));
+    let checkedPermittedHost = false;
 
-    console.log('Cookie lookup for', twentyUrl, ':', cookie ? 'found' : 'not found');
+    for (const url of cookieUrls) {
+      const hasHostPermission = await browser.permissions.contains({ origins: [`${url}/*`] });
+      if (!hasHostPermission) {
+        continue;
+      }
 
-    if (cookie?.value) {
-      const decodedValue = decodeURIComponent(cookie.value);
-      return extractTokenFromCookie(decodedValue);
+      checkedPermittedHost = true;
+      const cookie = await browser.cookies.get({
+        url,
+        name: 'tokenPair',
+      });
+
+      console.log('Cookie lookup for', url, ':', cookie ? 'found' : 'not found');
+
+      if (cookie?.value) {
+        const decodedValue = decodeURIComponent(cookie.value);
+        return extractTokenFromCookie(decodedValue);
+      }
     }
 
-    const altUrl = twentyUrl.includes('://www.')
-      ? twentyUrl.replace('://www.', '://')
-      : twentyUrl.replace('://', '://www.');
-
-    const altCookie = await browser.cookies.get({
-      url: altUrl,
-      name: 'tokenPair',
-    });
-
-    console.log('Alt cookie lookup for', altUrl, ':', altCookie ? 'found' : 'not found');
-
-    if (altCookie?.value) {
-      const decodedValue = decodeURIComponent(altCookie.value);
-      return extractTokenFromCookie(decodedValue);
+    if (!checkedPermittedHost) {
+      throw new Error('Missing host permission for your Twenty URL. Click Save or Test Connection and allow access.');
     }
 
     return null;
@@ -224,6 +238,9 @@ async function testConnection(): Promise<{ connected: boolean; error?: string }>
     }
     if (errorMessage.includes('No authentication token') || errorMessage.includes('No authentication')) {
       return { connected: false, error: 'Not logged in. Please open your Twenty instance and log in, then try again.' };
+    }
+    if (errorMessage.includes('Missing host permission')) {
+      return { connected: false, error: 'Permission required. Click "Test Connection" again and allow access to your Twenty domain.' };
     }
     if (errorMessage.includes('HTTP error')) {
       return { connected: false, error: 'Could not reach your Twenty instance. Please check the URL and ensure it is accessible.' };
