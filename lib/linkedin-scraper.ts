@@ -22,6 +22,178 @@ export function getLinkedInIdentifier(url: string): string | null {
   return null;
 }
 
+function isHttpImageUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function getCleanText(value?: string | null): string {
+  return (value || '').replace(/\s+/g, ' ').trim();
+}
+
+function readMetaContent(selector: string): string {
+  const element = document.querySelector(selector);
+  return getCleanText(element?.getAttribute('content'));
+}
+
+function cleanCompanyName(raw: string): string {
+  let name = getCleanText(raw);
+  if (!name) return '';
+
+  name = name.replace(/\s*[|]\s*LinkedIn.*$/i, '').trim();
+  name = name.replace(/\s*-\s*LinkedIn.*$/i, '').trim();
+  name = name.replace(/^LinkedIn:\s*/i, '').trim();
+
+  if (name.includes(':')) {
+    const [firstPart, secondPart] = name.split(':', 2);
+    if (/(overview|employees|people|about|jobs|insights)/i.test(secondPart || '')) {
+      name = firstPart.trim();
+    }
+  }
+
+  return name;
+}
+
+function getCompanyNameFromLinkedInUrl(url: string): string {
+  const companyMatch = url.match(/linkedin\.com\/company\/([^/?]+)/i);
+  if (!companyMatch) return '';
+
+  try {
+    const slug = decodeURIComponent(companyMatch[1]);
+    return getCleanText(slug.replace(/[-_]+/g, ' '));
+  } catch {
+    return getCleanText(companyMatch[1].replace(/[-_]+/g, ' '));
+  }
+}
+
+function readOrganizationJsonLd(): {
+  name?: string;
+  description?: string;
+  logoUrl?: string;
+  website?: string;
+} {
+  const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+
+  for (const script of scripts) {
+    const raw = script.textContent;
+    if (!raw) continue;
+
+    try {
+      const json = JSON.parse(raw) as unknown;
+      const nodes: unknown[] = Array.isArray(json) ? json : [json];
+
+      for (const node of nodes) {
+        if (!node || typeof node !== 'object') continue;
+
+        const candidate = node as Record<string, unknown>;
+        const type = candidate['@type'];
+        const typeValues = Array.isArray(type) ? type : [type];
+        const isOrganization = typeValues.some((v) =>
+          typeof v === 'string' && /(organization|corporation|company)/i.test(v)
+        );
+
+        if (!isOrganization) continue;
+
+        const logoValue = candidate.logo;
+        const logoUrl =
+          typeof logoValue === 'string'
+            ? logoValue
+            : logoValue && typeof logoValue === 'object' && typeof (logoValue as Record<string, unknown>).url === 'string'
+              ? ((logoValue as Record<string, unknown>).url as string)
+              : undefined;
+
+        const sameAs = candidate.sameAs;
+        let website: string | undefined;
+        if (Array.isArray(sameAs)) {
+          const external = sameAs.find(
+            (v) => typeof v === 'string' && /^https?:\/\//.test(v) && !v.includes('linkedin.com')
+          );
+          website = typeof external === 'string' ? external : undefined;
+        }
+
+        return {
+          name: typeof candidate.name === 'string' ? cleanCompanyName(candidate.name) : undefined,
+          description: typeof candidate.description === 'string' ? getCleanText(candidate.description) : undefined,
+          logoUrl,
+          website,
+        };
+      }
+    } catch {
+      // Ignore malformed JSON-LD blocks.
+    }
+  }
+
+  return {};
+}
+
+function resolveCompanyName(linkedinUrl: string): string {
+  const selectorCandidates = [
+    'h1.org-top-card-summary__title',
+    'h1[data-test-id*="entity"]',
+    'h1[data-test-id*="company"]',
+    'section h1',
+    'main h1',
+    'h1[title]',
+  ];
+
+  for (const selector of selectorCandidates) {
+    const text = cleanCompanyName(document.querySelector(selector)?.textContent || '');
+    if (text) return text;
+  }
+
+  const ogTitle = cleanCompanyName(readMetaContent('meta[property="og:title"]'));
+  if (ogTitle) return ogTitle;
+
+  const twitterTitle = cleanCompanyName(readMetaContent('meta[name="twitter:title"]'));
+  if (twitterTitle) return twitterTitle;
+
+  const jsonLd = readOrganizationJsonLd();
+  if (jsonLd.name) return cleanCompanyName(jsonLd.name);
+
+  const titleName = cleanCompanyName(document.title);
+  if (titleName) return titleName;
+
+  return getCompanyNameFromLinkedInUrl(linkedinUrl);
+}
+
+function resolveCompanyEmployeeCount(): string {
+  const employeePattern =
+    /\b\d[\d,.+\s]*\s*(employee(s)?|employé(e)?s?|empleado(s)?|mitarbeiter(innen)?|collaborateur(s)?)\b/i;
+
+  const infoItems = document.querySelectorAll('.org-top-card-summary-info-list__info-item');
+  for (const el of infoItems) {
+    const text = getCleanText(el.textContent);
+    if (employeePattern.test(text)) return text;
+  }
+
+  // Sales Navigator and newer LinkedIn layouts often render plain text without stable classes.
+  const allTextNodes = document.querySelectorAll('span, div, li, p');
+  for (const node of allTextNodes) {
+    const text = getCleanText(node.textContent);
+    if (employeePattern.test(text)) return text;
+  }
+
+  return '';
+}
+
+function resolveCompanyWebsite(jsonLdWebsite?: string): string {
+  const websiteElement =
+    document.querySelector('a[data-control-name="top_card_link_website"]') ||
+    document.querySelector('.link-without-visited-state.org-top-card-primary-actions__action') ||
+    document.querySelector('a[data-test-id*="website"]');
+
+  const href = websiteElement?.getAttribute('href') || '';
+  if (href && isHttpImageUrl(href)) return href;
+
+  if (jsonLdWebsite && isHttpImageUrl(jsonLdWebsite)) return jsonLdWebsite;
+
+  return '';
+}
+
 // Scrape person profile data from LinkedIn page
 export function scrapePersonProfile(): LinkedInProfileData | null {
   try {
@@ -111,10 +283,16 @@ function scrapeProfileImage(): string {
   
   for (const selector of selectors) {
     const img = document.querySelector(selector) as HTMLImageElement;
-    if (img?.src && !img.src.includes('ghost') && img.src.includes('profile')) {
+    const candidateUrl = img?.currentSrc || img?.src || '';
+    if (
+      candidateUrl &&
+      isHttpImageUrl(candidateUrl) &&
+      !candidateUrl.includes('ghost') &&
+      candidateUrl.includes('profile')
+    ) {
       // Use the URL as-is - LinkedIn URLs have signed params that break if modified
-      console.log('Scraped profile image:', img.src);
-      return img.src;
+      console.log('Scraped profile image:', candidateUrl);
+      return candidateUrl;
     }
   }
   
@@ -192,48 +370,34 @@ function scrapeCurrentCompanyFromProfile(): { name: string; linkedinUrl?: string
 export function scrapeCompanyPage(): LinkedInCompanyData | null {
   try {
     const linkedinUrl = window.location.href.split('?')[0];
-    
-    // Company name
-    const nameElement = 
-      document.querySelector('h1.org-top-card-summary__title') ||
-      document.querySelector('.org-top-card-summary-info-list__info-item') ||
-      document.querySelector('h1[title]');
-    
-    if (!nameElement) {
-      console.warn('Could not find company name element');
+
+    const jsonLd = readOrganizationJsonLd();
+
+    // Company name with resilient fallback chain for Sales Navigator / redesigned pages.
+    const name = resolveCompanyName(linkedinUrl);
+    if (!name) {
+      console.warn('Could not resolve company name from page or metadata');
       return null;
     }
-    
-    const name = nameElement.textContent?.trim() || '';
-    
+
     // Industry
     const industryElement = document.querySelector('.org-top-card-summary-info-list__info-item');
-    const industry = industryElement?.textContent?.trim() || '';
-    
+    const industry = getCleanText(industryElement?.textContent);
+
     // Employee count
-    const employeeElements = document.querySelectorAll('.org-top-card-summary-info-list__info-item');
-    let employeeCount = '';
-    employeeElements.forEach((el) => {
-      const text = el.textContent || '';
-      if (text.includes('employees') || text.includes('employee')) {
-        employeeCount = text.trim();
-      }
-    });
-    
-    // Website - look in the about section or sidebar
-    const websiteElement = 
-      document.querySelector('a[data-control-name="top_card_link_website"]') ||
-      document.querySelector('.link-without-visited-state.org-top-card-primary-actions__action');
-    const website = websiteElement?.getAttribute('href') || '';
-    
+    const employeeCount = resolveCompanyEmployeeCount();
+
+    // Website
+    const website = resolveCompanyWebsite(jsonLd.website);
+
     // Logo
-    const logoElement = document.querySelector('.org-top-card-primary-content__logo');
-    const logoUrl = logoElement?.getAttribute('src') || '';
-    
+    const logoElement = document.querySelector('.org-top-card-primary-content__logo') as HTMLImageElement | null;
+    const logoUrl = logoElement?.currentSrc || logoElement?.getAttribute('src') || jsonLd.logoUrl || '';
+
     // Description/tagline
     const descElement = document.querySelector('.org-top-card-summary__tagline');
-    const description = descElement?.textContent?.trim() || '';
-    
+    const description = getCleanText(descElement?.textContent) || getCleanText(jsonLd.description);
+
     return {
       type: 'company',
       linkedinUrl,
@@ -308,4 +472,3 @@ function extractCompanyFromHeadline(headline: string): string {
   
   return '';
 }
-
