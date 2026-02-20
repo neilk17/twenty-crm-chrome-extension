@@ -51,3 +51,15 @@ export async function getRecentCaptures() {
   return lastCapturedStorage.getValue();
 }
 
+export const analyticsIdStorage = storage.defineItem<string>('local:analyticsId', {
+  fallback: '',
+});
+
+export async function getOrCreateAnalyticsId(): Promise<string> {
+  const existing = await analyticsIdStorage.getValue();
+  if (existing) return existing;
+  const id = crypto.randomUUID();
+  await analyticsIdStorage.setValue(id);
+  return id;
+}
+
