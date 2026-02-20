@@ -2,11 +2,13 @@
 
 Install this Chrome extension and manage your Twenty CRM workspace from Linkedin, Gmail and anywhere on the web. 
 
-Thanks to [https://github.com/JhumanJ/twenty-crm-extension](https://github.com/JhumanJ/twenty-crm-extension) for the base extension which this is a fork of.
-
 ##  Downloading the Extension
 
-### Quick Install (Recommended)
+### Chrome Web Store (Beta)
+
+**[Install from Chrome Web Store](https://chromewebstore.google.com/detail/twenty-crm-linkedin-captu/lcnlieolnenacjbhohgbnhkmniimlmli?authuser=0&hl=en)** — Note: this is still in beta.
+
+### Manual Install
 
 1. **[⬇️ Download Latest Release](../../releases/latest)**
 2. Download the `twenty-crm-linkedin-extension-*-chrome.zip` file
@@ -41,20 +43,20 @@ Thanks to [https://github.com/JhumanJ/twenty-crm-extension](https://github.com/J
 ### Capturing a LinkedIn Profile
 
 1. Visit any LinkedIn profile (`linkedin.com/in/username`)
-2. A button appears in the **bottom-left corner**:
+2. Click the extension icon to open the **sidebar**:
 
-   | Button State       | Meaning                               |
+   | Sidebar State      | Meaning                               |
    | ------------------ | ------------------------------------- |
    | **Add to Twenty**  | Profile not in CRM - click to add     |
    | **Open in Twenty** | Profile exists - click to view in CRM |
 
-3. Click `•••` for more options:
+3. Additional options in the sidebar:
    - **Link to existing contact** - Search and link to existing record
    - **Update from LinkedIn** - Refresh CRM with current LinkedIn data
 
 ### Capturing a Company
 
-Same process - visit any LinkedIn company page (`linkedin.com/company/name`)
+Same process - visit any LinkedIn company page (`linkedin.com/company/name`) and open the sidebar
 
 ---
 
@@ -121,7 +123,7 @@ The built extension is in `.output/chrome-mv3/`
 
 ## 📄 License
 
-MIT
+AGPL-3.0 license
 
 ---
 

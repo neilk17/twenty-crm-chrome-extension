@@ -1,3 +1,7 @@
+# Environment variables
+.env
+.env.local
+
 # Logs
 logs
 *.log
@@ -13,6 +17,7 @@ stats.html
 stats-*.json
 .wxt
 web-ext.config.ts
+*.zip
 
 # Editor directories and files
 .vscode/*
