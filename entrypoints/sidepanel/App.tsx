@@ -18,7 +18,6 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { getLinkedInPageType } from "../../lib/linkedin-scraper";
 import { track } from "../../lib/analytics";
-import { getNormalizedDomain } from "../../lib/domain-extractor";
 import type {
 	CaptureState,
 	ExtensionResponse,
@@ -76,17 +75,6 @@ export default function App() {
 				return "Connection failed";
 			default:
 				return "Unknown";
-		}
-	}, [connectionStatus]);
-
-	const statusColorClass = useMemo(() => {
-		switch (connectionStatus) {
-			case "connected":
-				return "text-emerald-400";
-			case "no-session":
-				return "text-amber-400";
-			default:
-				return "text-red-400";
 		}
 	}, [connectionStatus]);
 
@@ -161,7 +149,8 @@ export default function App() {
 		}
 	}
 
-	// Load settings on mount
+	// Load settings on mount (intentionally run once; handlers are stable by convention)
+	// biome-ignore lint/correctness/useExhaustiveDependencies: mount-only init
 	useEffect(() => {
 		track("extension_opened", {});
 		loadSettings();
@@ -170,13 +159,16 @@ export default function App() {
 			checkCurrentTab();
 		}, 100);
 
-		const handleTabUpdate = (tabId: number, changeInfo: any, tab: any) => {
+		const handleTabUpdate = (
+			_tabId: number,
+			changeInfo: { url?: string; status?: string },
+		) => {
 			if (changeInfo.url || changeInfo.status === "complete") {
 				checkCurrentTab();
 			}
 		};
 
-		const handleTabActivated = (activeInfo: any) => {
+		const handleTabActivated = () => {
 			checkCurrentTab();
 		};
 
@@ -190,6 +182,7 @@ export default function App() {
 	}, []);
 
 	// Re-check the active LinkedIn tab once configuration/auth become available.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only re-run when URL/token change
 	useEffect(() => {
 		if (twentyUrl && hasToken) {
 			checkCurrentTab();
@@ -197,11 +190,13 @@ export default function App() {
 	}, [twentyUrl, hasToken]);
 
 	// Reset auto-fetch attempts whenever the active URL changes.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: currentTabUrl is the trigger for reset
 	useEffect(() => {
 		setAutoFetchAttempts(0);
 	}, [currentTabUrl]);
 
 	// If state is still idle on a LinkedIn page, retry automatically without requiring a button click.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: checkCurrentTab intentionally not in deps to avoid retry loops
 	useEffect(() => {
 		if (!twentyUrl || !hasToken || isCheckingPage || isLoading) return;
 		if (!currentTabUrl || !getLinkedInPageType(currentTabUrl)) return;
@@ -301,7 +296,7 @@ export default function App() {
 				if (scrapeResponse.success && scrapeResponse.data) {
 					scrapedData = scrapeResponse.data;
 				}
-			} catch (e) {
+			} catch {
 				// Content script might not be loaded, that's okay
 				console.log(
 					"Could not get data from content script, will check duplicate anyway",
@@ -357,7 +352,7 @@ export default function App() {
 		}
 	}
 
-	async function checkDomainForCapture(tabId: number, url: string) {
+	async function checkDomainForCapture(tabId: number, _url: string) {
 		setIsCheckingPage(true);
 		setCaptureState({ status: "loading" });
 
@@ -544,7 +539,7 @@ export default function App() {
 				if (scrapeResponse.success && scrapeResponse.data) {
 					scrapedData = scrapeResponse.data;
 				}
-			} catch (e) {
+			} catch {
 				setError("Could not get page data. Please refresh the LinkedIn page.");
 				setCaptureState({ ...captureState, status: "error" });
 				return;
@@ -808,12 +803,16 @@ export default function App() {
 													{captureState.data.type === "person"
 														? (captureState.data
 																.headline as LinkedInProfileData["headline"])
-														: captureState.data.description}
+														: "description" in captureState.data
+															? captureState.data.description
+															: null}
 												</p>
 												<p className="text-sm text-muted-foreground">
 													{captureState.data.type === "person"
 														? captureState.data.currentCompany
-														: captureState.data.industry}
+														: "industry" in captureState.data
+															? captureState.data.industry
+															: null}
 												</p>
 											</div>
 										</div>
@@ -956,35 +955,37 @@ export default function App() {
 							<Label className="text-sm font-medium">Recently Added</Label>
 							<ul className="list-none p-0 mt-2">
 								{recentCaptures.map((capture) => (
-									<li
-										key={capture.twentyId}
-										className="flex items-center gap-3 px-3 py-2.5 bg-sidebar rounded-lg mb-2 cursor-pointer transition-colors hover:bg-sidebar/80"
-										onClick={() => openRecord(capture)}
-									>
-										<div className="flex items-center justify-center w-8 h-8 bg-red-200 rounded-full ">
-											{capture.type === "person" ? (
-												<Avatar>
-													<AvatarFallback>
-														<User className="size-4" />
-													</AvatarFallback>
-												</Avatar>
-											) : (
-												<Avatar>
-													<AvatarFallback>
-														<Building2 className="size-4" />
-													</AvatarFallback>
-												</Avatar>
-											)}
-										</div>
-										<div className="flex-1 min-w-0">
-											<span className="block text-sm font-medium whitespace-nowrap overflow-hidden text-ellipsis">
-												{capture.name}
-											</span>
-											<span className="text-xs ">
-												{formatDate(capture.capturedAt)}
-											</span>
-										</div>
-										<Link className="size-3" />
+									<li key={capture.twentyId} className="mb-2 list-none">
+										<button
+											type="button"
+											className="flex w-full items-center gap-3 px-3 py-2.5 bg-sidebar rounded-lg cursor-pointer transition-colors hover:bg-sidebar/80 text-left"
+											onClick={() => openRecord(capture)}
+										>
+											<div className="flex items-center justify-center w-8 h-8 bg-red-200 rounded-full ">
+												{capture.type === "person" ? (
+													<Avatar>
+														<AvatarFallback>
+															<User className="size-4" />
+														</AvatarFallback>
+													</Avatar>
+												) : (
+													<Avatar>
+														<AvatarFallback>
+															<Building2 className="size-4" />
+														</AvatarFallback>
+													</Avatar>
+												)}
+											</div>
+											<div className="flex-1 min-w-0">
+												<span className="block text-sm font-medium whitespace-nowrap overflow-hidden text-ellipsis">
+													{capture.name}
+												</span>
+												<span className="text-xs ">
+													{formatDate(capture.capturedAt)}
+												</span>
+											</div>
+											<Link className="size-3" />
+										</button>
 									</li>
 								))}
 							</ul>
