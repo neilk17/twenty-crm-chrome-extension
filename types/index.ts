@@ -57,14 +57,24 @@ export type TwentyCompany = {
 };
 
 export type TwentyTokenPair = {
-  accessOrWorkspaceAgnosticToken: {
+  accessOrWorkspaceAgnosticToken?: {
     token: string;
     expiresAt: string;
   };
-  refreshToken: {
+  accessToken?: {
     token: string;
     expiresAt: string;
   };
+  workspaceAccessToken?: {
+    token: string;
+    expiresAt: string;
+  };
+  refreshToken?: {
+    token: string;
+    expiresAt: string;
+  };
+  token?: string;
+  [key: string]: unknown;
 };
 
 // Extension State Types
@@ -148,4 +158,3 @@ export type CreatePersonResult = {
 export type CreateCompanyResult = {
   createCompany: TwentyCompany;
 };
-

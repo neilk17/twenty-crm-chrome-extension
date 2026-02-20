@@ -45,6 +45,7 @@ export default function App() {
   const [captureState, setCaptureState] = useState<CaptureState>({
     status: "idle",
   });
+  const [autoFetchAttempts, setAutoFetchAttempts] = useState(0);
 
   console.log("captureState", captureState);
   const [currentTabUrl, setCurrentTabUrl] = useState<string | null>(null);
@@ -91,18 +92,45 @@ export default function App() {
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
       url = `https://${url}`;
     }
-    return url.replace(/\/$/, "");
+
+    try {
+      const parsed = new URL(url);
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname === "twenty.com" || hostname === "www.twenty.com") {
+        return `${parsed.protocol}//app.twenty.com`;
+      }
+      const normalizedPath =
+        parsed.pathname && parsed.pathname !== "/"
+          ? parsed.pathname.replace(/\/$/, "")
+          : "";
+      return `${parsed.origin}${normalizedPath}`;
+    } catch {
+      return url.replace(/\/$/, "");
+    }
   }
 
   function getTwentyOriginPatterns(urlValue: string): string[] {
     try {
       const parsed = new URL(urlValue);
       const protocol = parsed.protocol;
-      const hostnames = new Set<string>([parsed.hostname]);
-      if (parsed.hostname.startsWith("www.")) {
-        hostnames.add(parsed.hostname.replace(/^www\./, ""));
+      const hostname = parsed.hostname.toLowerCase();
+      const hostnames = new Set<string>([hostname]);
+      if (hostname.startsWith("www.")) {
+        hostnames.add(hostname.replace(/^www\./, ""));
       } else {
-        hostnames.add(`www.${parsed.hostname}`);
+        hostnames.add(`www.${hostname}`);
+      }
+
+      if (
+        hostname === "twenty.com"
+        || hostname === "www.twenty.com"
+        || hostname === "app.twenty.com"
+        || hostname === "api.twenty.com"
+      ) {
+        hostnames.add("twenty.com");
+        hostnames.add("www.twenty.com");
+        hostnames.add("app.twenty.com");
+        hostnames.add("api.twenty.com");
       }
       return Array.from(hostnames).map((hostname) => `${protocol}//${hostname}/*`);
     } catch {
@@ -154,6 +182,41 @@ export default function App() {
       browser.tabs.onActivated.removeListener(handleTabActivated);
     };
   }, []);
+
+  // Re-check the active LinkedIn tab once configuration/auth become available.
+  useEffect(() => {
+    if (twentyUrl && hasToken) {
+      checkCurrentTab();
+    }
+  }, [twentyUrl, hasToken]);
+
+  // Reset auto-fetch attempts whenever the active URL changes.
+  useEffect(() => {
+    setAutoFetchAttempts(0);
+  }, [currentTabUrl]);
+
+  // If state is still idle on a LinkedIn page, retry automatically without requiring a button click.
+  useEffect(() => {
+    if (!twentyUrl || !hasToken || isCheckingPage || isLoading) return;
+    if (!currentTabUrl || !getLinkedInPageType(currentTabUrl)) return;
+    if (captureState.status !== "idle") return;
+    if (autoFetchAttempts >= 3) return;
+
+    const timeout = setTimeout(() => {
+      setAutoFetchAttempts((prev) => prev + 1);
+      checkCurrentTab();
+    }, 400);
+
+    return () => clearTimeout(timeout);
+  }, [
+    twentyUrl,
+    hasToken,
+    isCheckingPage,
+    isLoading,
+    currentTabUrl,
+    captureState.status,
+    autoFetchAttempts,
+  ]);
 
   async function checkCurrentTab() {
     try {
@@ -210,6 +273,11 @@ export default function App() {
     url: string,
     pageType: "person" | "company"
   ) {
+    if (!twentyUrl || !hasToken) {
+      setCaptureState({ status: "idle" });
+      return;
+    }
+
     setIsCheckingPage(true);
     setCaptureState({ status: "loading" });
 
@@ -407,6 +475,8 @@ export default function App() {
 
   function getCaptureButtonText(): string {
     switch (captureState.status) {
+      case "idle":
+        return "Checking profile...";
       case "loading":
         return "Checking...";
       case "ready":
@@ -432,7 +502,7 @@ export default function App() {
       })) as ExtensionResponse<{ twentyUrl: string; hasToken: boolean }>;
 
       if (response.success && response.data) {
-        setTwentyUrl(response.data.twentyUrl || "");
+        setTwentyUrl(normalizeTwentyUrl(response.data.twentyUrl || ""));
         setHasToken(response.data.hasToken || false);
 
         if (response.data.hasToken) {

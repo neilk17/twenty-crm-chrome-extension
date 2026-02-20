@@ -5,6 +5,134 @@ import type { ExtensionMessage, ExtensionResponse, LinkedInProfileData, LinkedIn
 // Cache for API client
 let apiClient: TwentyApiClient | null = null;
 let cachedTwentyUrl: string | null = null;
+let cachedAuthToken: { apiBaseUrl: string; token: string; checkedAt: number } | null = null;
+
+const AUTH_TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function parseTwentyUrl(twentyUrl: string): URL | null {
+  const normalized = twentyUrl.trim();
+  if (!normalized) return null;
+
+  const withProtocol = /^https?:\/\//i.test(normalized)
+    ? normalized
+    : `https://${normalized}`;
+
+  try {
+    return new URL(withProtocol);
+  } catch {
+    return null;
+  }
+}
+
+function isOfficialTwentyCloudHost(hostname: string): boolean {
+  return hostname === 'twenty.com'
+    || hostname === 'www.twenty.com'
+    || hostname === 'app.twenty.com'
+    || hostname === 'api.twenty.com';
+}
+
+function normalizeTwentyUrlForStorage(twentyUrl: string): string {
+  const parsed = parseTwentyUrl(twentyUrl);
+  if (!parsed) {
+    return twentyUrl.trim().replace(/\/$/, '');
+  }
+
+  const normalizedHost = parsed.hostname.toLowerCase();
+  if (normalizedHost === 'twenty.com' || normalizedHost === 'www.twenty.com') {
+    return `${parsed.protocol}//app.twenty.com`;
+  }
+
+  const normalizedPath = parsed.pathname && parsed.pathname !== '/'
+    ? parsed.pathname.replace(/\/$/, '')
+    : '';
+  return `${parsed.protocol}//${parsed.hostname}${normalizedPath}`;
+}
+
+function resolveTwentyApiBaseUrl(twentyUrl: string): string {
+  const parsed = parseTwentyUrl(twentyUrl);
+  if (!parsed) {
+    return twentyUrl.trim().replace(/\/$/, '');
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+
+  if (isOfficialTwentyCloudHost(hostname)) {
+    return `${parsed.protocol}//api.twenty.com`;
+  }
+
+  const normalizedPath = parsed.pathname && parsed.pathname !== '/'
+    ? parsed.pathname.replace(/\/$/, '')
+    : '';
+  return `${parsed.origin}${normalizedPath}`;
+}
+
+function isAuthGraphQLError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('unauthorized')
+    || normalized.includes('authentication')
+    || normalized.includes('forbidden')
+    || normalized.includes('invalid token')
+    || normalized.includes('jwt')
+    || normalized.includes('access denied');
+}
+
+async function validateTokenForApi(apiBaseUrl: string, token: string): Promise<boolean> {
+  const probes = [
+    `query { currentUser { id } }`,
+    `query { currentWorkspace { id } }`,
+    `query { people(first: 1) { edges { node { id } } } }`,
+  ];
+
+  for (const query of probes) {
+    let response: Response;
+    try {
+      response = await fetch(`${apiBaseUrl}/graphql`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ query }),
+      });
+    } catch {
+      return false;
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      return false;
+    }
+
+    if (!response.ok) {
+      continue;
+    }
+
+    let result: unknown;
+    try {
+      result = await response.json();
+    } catch {
+      continue;
+    }
+
+    const errors = (result as { errors?: Array<{ message?: string }> })?.errors || [];
+    if (!errors.length) {
+      return true;
+    }
+
+    const errorText = errors
+      .map((error) => error?.message || '')
+      .filter(Boolean)
+      .join(' | ');
+
+    if (isAuthGraphQLError(errorText)) {
+      return false;
+    }
+
+    // Non-auth GraphQL errors still prove the token is accepted.
+    return true;
+  }
+
+  return false;
+}
 
 // Get or create API client
 async function getApiClient(): Promise<TwentyApiClient> {
@@ -14,10 +142,12 @@ async function getApiClient(): Promise<TwentyApiClient> {
     throw new Error('Twenty URL not configured');
   }
 
+  const apiBaseUrl = resolveTwentyApiBaseUrl(settings.twentyUrl);
+
   // Create new client if URL changed
-  if (cachedTwentyUrl !== settings.twentyUrl || !apiClient) {
-    apiClient = new TwentyApiClient(settings.twentyUrl);
-    cachedTwentyUrl = settings.twentyUrl;
+  if (cachedTwentyUrl !== apiBaseUrl || !apiClient) {
+    apiClient = new TwentyApiClient(apiBaseUrl);
+    cachedTwentyUrl = apiBaseUrl;
   }
 
   // Get fresh token from cookie
@@ -30,36 +160,40 @@ async function getApiClient(): Promise<TwentyApiClient> {
   return apiClient;
 }
 
-function getTwentyCookieUrls(twentyUrl: string): { primaryUrl: string; alternateUrl: string | null } {
-  try {
-    const parsed = new URL(twentyUrl);
-    const primaryUrl = parsed.origin;
-
-    const altHostname = parsed.hostname.startsWith('www.')
-      ? parsed.hostname.replace(/^www\./, '')
-      : `www.${parsed.hostname}`;
-
-    const alternateUrl = altHostname === parsed.hostname
-      ? null
-      : `${parsed.protocol}//${altHostname}`;
-
-    return { primaryUrl, alternateUrl };
-  } catch {
-    const normalized = twentyUrl.replace(/\/$/, '');
-    const alternateUrl = normalized.includes('://www.')
-      ? normalized.replace('://www.', '://')
-      : normalized.includes('://')
-        ? normalized.replace('://', '://www.')
-        : null;
-    return { primaryUrl: normalized, alternateUrl };
+function getTwentyCookieUrls(twentyUrl: string): string[] {
+  const parsed = parseTwentyUrl(twentyUrl);
+  if (!parsed) {
+    const normalized = twentyUrl.trim().replace(/\/$/, '');
+    return normalized ? [normalized] : [];
   }
+
+  const protocol = parsed.protocol;
+  const hostname = parsed.hostname.toLowerCase();
+  const hostnames = new Set<string>([hostname]);
+
+  if (hostname.startsWith('www.')) {
+    hostnames.add(hostname.replace(/^www\./, ''));
+  } else {
+    hostnames.add(`www.${hostname}`);
+  }
+
+  if (isOfficialTwentyCloudHost(hostname)) {
+    hostnames.add('twenty.com');
+    hostnames.add('www.twenty.com');
+    hostnames.add('app.twenty.com');
+    hostnames.add('api.twenty.com');
+  }
+
+  return Array.from(hostnames).map((host) => `${protocol}//${host}`);
 }
 
 // Get auth token from Twenty's cookie
 async function getAuthToken(twentyUrl: string): Promise<string | null> {
   try {
-    const { primaryUrl, alternateUrl } = getTwentyCookieUrls(twentyUrl);
-    const cookieUrls = Array.from(new Set([primaryUrl, alternateUrl].filter((url): url is string => !!url)));
+    const apiBaseUrl = resolveTwentyApiBaseUrl(twentyUrl);
+    const cookieUrls = getTwentyCookieUrls(twentyUrl);
+    const cookieNames = ['tokenPair', 'accessToken', 'access-token'];
+    const tokenCandidates: string[] = [];
     let checkedPermittedHost = false;
 
     for (const url of cookieUrls) {
@@ -69,16 +203,28 @@ async function getAuthToken(twentyUrl: string): Promise<string | null> {
       }
 
       checkedPermittedHost = true;
-      const cookie = await browser.cookies.get({
-        url,
-        name: 'tokenPair',
-      });
+      for (const cookieName of cookieNames) {
+        const cookie = await browser.cookies.get({
+          url,
+          name: cookieName,
+        });
 
-      console.log('Cookie lookup for', url, ':', cookie ? 'found' : 'not found');
+        console.log('Cookie lookup for', url, cookieName, ':', cookie ? 'found' : 'not found');
 
-      if (cookie?.value) {
-        const decodedValue = decodeURIComponent(cookie.value);
-        return extractTokenFromCookie(decodedValue);
+        if (!cookie?.value) {
+          continue;
+        }
+
+        const token = extractTokenFromCookie(cookie.value);
+        if (token) {
+          if (!tokenCandidates.includes(token)) {
+            tokenCandidates.push(token);
+          }
+          console.log('Successfully extracted token candidate from cookie', cookieName, 'for', url);
+          continue;
+        }
+
+        console.warn('Cookie found but token extraction failed for', url, cookieName);
       }
     }
 
@@ -86,7 +232,34 @@ async function getAuthToken(twentyUrl: string): Promise<string | null> {
       throw new Error('Missing host permission for your Twenty URL. Click Save or Test Connection and allow access.');
     }
 
-    return null;
+    if (tokenCandidates.length === 0) {
+      return null;
+    }
+
+    if (
+      cachedAuthToken
+      && cachedAuthToken.apiBaseUrl === apiBaseUrl
+      && (Date.now() - cachedAuthToken.checkedAt) < AUTH_TOKEN_CACHE_TTL_MS
+      && tokenCandidates.includes(cachedAuthToken.token)
+    ) {
+      return cachedAuthToken.token;
+    }
+
+    for (const candidateToken of tokenCandidates) {
+      const valid = await validateTokenForApi(apiBaseUrl, candidateToken);
+      if (valid) {
+        cachedAuthToken = {
+          apiBaseUrl,
+          token: candidateToken,
+          checkedAt: Date.now(),
+        };
+        console.log('Validated auth token candidate for', apiBaseUrl);
+        return candidateToken;
+      }
+    }
+
+    console.warn('Could not validate token candidates; using first extracted token as fallback.');
+    return tokenCandidates[0];
   } catch (error) {
     console.error('Error getting auth token:', error);
     return null;
@@ -283,23 +456,33 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
 
       case 'GET_SETTINGS': {
         const settings = await getSettings();
+        const normalizedTwentyUrl = settings.twentyUrl
+          ? normalizeTwentyUrlForStorage(settings.twentyUrl)
+          : settings.twentyUrl;
         const hasToken = settings.twentyUrl
           ? !!(await getAuthToken(settings.twentyUrl))
           : false;
         return {
           success: true,
-          data: { ...settings, hasToken }
+          data: { ...settings, twentyUrl: normalizedTwentyUrl, hasToken }
         };
       }
 
       case 'SAVE_SETTINGS': {
         const newSettings = message.payload as { twentyUrl?: string };
-        console.log('Saving settings:', newSettings);
-        await saveSettings(newSettings);
+        const normalizedSettings = {
+          ...newSettings,
+          twentyUrl: newSettings.twentyUrl
+            ? normalizeTwentyUrlForStorage(newSettings.twentyUrl)
+            : newSettings.twentyUrl,
+        };
+        console.log('Saving settings:', normalizedSettings);
+        await saveSettings(normalizedSettings);
         // Clear cached client when URL changes
         if (newSettings.twentyUrl) {
           apiClient = null;
           cachedTwentyUrl = null;
+          cachedAuthToken = null;
         }
         console.log('Settings saved successfully');
         return { success: true };
@@ -374,10 +557,16 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
         return { success: false, error: 'Unknown message type' };
     }
   } catch (error) {
-    console.error('Background error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const isExpectedSetupState = errorMessage.includes('Twenty URL not configured')
+      || errorMessage.includes('No authentication token');
+
+    if (!isExpectedSetupState) {
+      console.error('Background error:', error);
+    }
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
+      error: errorMessage
     };
   }
 }
