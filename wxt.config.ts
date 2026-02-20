@@ -32,7 +32,9 @@ export default defineConfig({
     // Only request LinkedIn access upfront
     host_permissions: [
       "https://www.linkedin.com/*",
-      "https://linkedin.com/*"
+      "https://linkedin.com/*",
+      "https://us.i.posthog.com/*",
+      "https://eu.i.posthog.com/*",
     ],
 
     // CRM domain access can be requested at runtime

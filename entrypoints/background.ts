@@ -1,5 +1,6 @@
 import { TwentyApiClient, extractTokenFromCookie } from '../lib/twenty-api';
 import { getSettings, saveSettings, addToRecentCaptures, getRecentCaptures } from '../lib/storage';
+import { track } from '../lib/analytics';
 import type { ExtensionMessage, ExtensionResponse, LinkedInProfileData, LinkedInCompanyData } from '../types';
 
 // Cache for API client
@@ -450,8 +451,14 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
 
       case 'CREATE_RECORD': {
         const data = message.payload as LinkedInProfileData | LinkedInCompanyData;
-        const result = await createRecord(data);
-        return { success: true, data: result };
+        try {
+          const result = await createRecord(data);
+          track('capture_created', { type: data.type, success: true });
+          return { success: true, data: result };
+        } catch (err) {
+          track('capture_created', { type: data.type, success: false });
+          throw err;
+        }
       }
 
       case 'GET_SETTINGS': {
@@ -485,14 +492,17 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
           cachedAuthToken = null;
         }
         console.log('Settings saved successfully');
+        track('settings_saved', {});
         return { success: true };
       }
 
       case 'TEST_CONNECTION': {
         const result = await testConnection();
         if (result.connected) {
+          track('connection_tested', { success: true });
           return { success: true, data: { connected: true } };
         } else {
+          track('connection_tested', { success: false });
           return { success: false, error: result.error || 'Connection test failed' };
         }
       }
@@ -516,8 +526,14 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
           data: LinkedInProfileData | LinkedInCompanyData;
         };
         const client = await getApiClient();
-        await client.updateRecordWithLinkedInData(id, type, data);
-        return { success: true, data: { id } };
+        try {
+          await client.updateRecordWithLinkedInData(id, type, data);
+          track('capture_updated', { type, success: true });
+          return { success: true, data: { id } };
+        } catch (err) {
+          track('capture_updated', { type, success: false });
+          throw err;
+        }
       }
 
       case 'SCRAPE_PAGE': {
@@ -563,6 +579,11 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
 
     if (!isExpectedSetupState) {
       console.error('Background error:', error);
+      if (isAuthGraphQLError(errorMessage)) {
+        track('error_occurred', { context: message.type, kind: 'auth' });
+      } else {
+        track('error_occurred', { context: message.type, kind: 'general' });
+      }
     }
     return {
       success: false,
