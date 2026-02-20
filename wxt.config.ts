@@ -1,10 +1,20 @@
 import { defineConfig } from 'wxt';
 
+const buildChannel = process.env.BUILD_CHANNEL === 'beta' ? 'beta' : 'stable';
+const extensionVersion = '1.0.4';
+const isBeta = buildChannel === 'beta';
+
 export default defineConfig({
   manifest: {
-    name: "Twenty CRM - LinkedIn Capture",
-    version: "1.0.3", // Increment version
-    description: "Quickly add LinkedIn profiles and companies to your Twenty CRM",
+    name: isBeta
+      ? 'Twenty CRM - LinkedIn Capture (Beta)'
+      : 'Twenty CRM - LinkedIn Capture',
+    short_name: isBeta ? 'Twenty CRM Beta' : 'Twenty CRM',
+    version: extensionVersion,
+    version_name: isBeta ? `${extensionVersion}-beta` : extensionVersion,
+    description: isBeta
+      ? 'Beta build: Quickly add LinkedIn profiles and companies to your Twenty CRM'
+      : 'Quickly add LinkedIn profiles and companies to your Twenty CRM',
 
     icons: {
       "16": "logo-16.png",
