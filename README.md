@@ -1,6 +1,6 @@
-# Twenty CRM Chrome Extension
+# Twenty CRM Browser Extension
 
-Install this Chrome extension and manage your Twenty CRM workspace from Linkedin, Gmail and anywhere on the web. 
+Install this browser extension and manage your Twenty CRM workspace from Linkedin, Gmail and anywhere on the web. 
 
 ##  Downloading the Extension
 
@@ -8,7 +8,7 @@ Install this Chrome extension and manage your Twenty CRM workspace from Linkedin
 
 **[Install from Chrome Web Store](https://chromewebstore.google.com/detail/twenty-crm-linkedin-captu/lcnlieolnenacjbhohgbnhkmniimlmli?authuser=0&hl=en)** — Note: this is still in beta.
 
-### Manual Install
+### Chrome - Manual Install
 
 1. **[⬇️ Download Latest Release](../../releases/latest)**
 2. Download the `twenty-crm-linkedin-extension-*-chrome.zip` file
@@ -17,6 +17,17 @@ Install this Chrome extension and manage your Twenty CRM workspace from Linkedin
 5. Enable **Developer mode** (toggle top right)
 6. Click **Load unpacked** → select the **unzipped folder** (the one containing `manifest.json`)
 7. Click the extension icon and enter your Twenty CRM URL
+
+### Firefox - Manual Install
+
+1. **[⬇️ Download Latest Release](../../releases/latest)**
+2. Download the `twenty-crm-linkedin-extension-*-firefox.zip` file
+3. Open Firefox → `about:debugging#/runtime/this-firefox`
+4. Click **Load Temporary Add-on** → select the **ZIP file** (or any file inside the unzipped folder)
+5. Click the extension icon or use **View → Sidebar → Twenty CRM** to open the sidebar
+6. Enter your Twenty CRM URL
+
+> **Firefox Note**: Temporary add-ons are removed when Firefox restarts. For permanent installation, the extension needs to be signed by Mozilla or installed via `about:config` with `xpinstall.signatures.required` set to `false` (not recommended for security).
 
 > **Note**: You must be logged into your Twenty CRM in the same browser for the extension to work.
 >
@@ -92,16 +103,21 @@ cd twenty-crm-chrome-extension
 npm install
 
 # Development with hot reload
-npm run dev
+npm run dev           # Chrome
+npm run dev:firefox   # Firefox
 
 # Build for production
-npm run build
+npm run build         # Chrome
+npm run build:firefox # Firefox
 
 # Create distributable ZIP
-npm run zip
+npm run zip           # Chrome
+npm run zip:firefox   # Firefox
 ```
 
-The built extension is in `.output/chrome-mv3/`
+Built extensions:
+- Chrome: `.output/chrome-mv3/`
+- Firefox: `.output/firefox-mv2/`
 
 ---
 

@@ -2,6 +2,21 @@
 
 All notable changes to Twenty CRM LinkedIn Capture Extension.
 
+## [1.1.0] - 2026-02-21
+
+### ✨ Features
+
+- **Firefox Support** - Extension now works on Firefox in addition to Chrome
+  - Uses Firefox sidebar API for the side panel
+  - Cross-browser compatible script execution
+  - Toolbar icon toggles sidebar on Firefox
+
+### 🔧 Technical
+
+- Added cross-browser detection for `browser.scripting` vs `browser.tabs.executeScript`
+- Firefox uses Manifest V2 with `sidebar_action` instead of Chrome's `side_panel`
+- Added `npm run dev:firefox`, `npm run build:firefox`, and `npm run zip:firefox` commands
+
 ## [1.0.0] - 2024-12-17
 
 ### ✨ Features
