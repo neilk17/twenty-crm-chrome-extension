@@ -599,28 +599,40 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
       case 'SCRAPE_PAGE': {
         const { tabId } = message.payload as { tabId: number };
         try {
-          // Execute script to scrape the page
-          const results = await browser.scripting.executeScript({
-            target: { tabId },
-            func: () => {
-              const linkedinUrl = window.location.href.split('?')[0];
-              const isPerson = linkedinUrl.includes('linkedin.com/in/');
-              const isCompany = linkedinUrl.includes('linkedin.com/company/');
+          // Cross-browser script execution
+          const scrapeFunc = () => {
+            const linkedinUrl = window.location.href.split('?')[0];
+            const isPerson = linkedinUrl.includes('linkedin.com/in/');
+            const isCompany = linkedinUrl.includes('linkedin.com/company/');
 
-              if (!isPerson && !isCompany) {
-                return { type: null, data: null };
-              }
+            if (!isPerson && !isCompany) {
+              return { type: null, data: null };
+            }
 
-              // For now, return the URL and type - we'll scrape in the content script
-              return {
-                type: isPerson ? 'person' : 'company',
-                url: linkedinUrl,
-              };
-            },
-          });
+            return {
+              type: isPerson ? 'person' : 'company',
+              url: linkedinUrl,
+            };
+          };
 
-          if (results && results[0]?.result) {
-            return { success: true, data: results[0].result };
+          let result;
+          // Chrome MV3 uses browser.scripting, Firefox MV2 uses browser.tabs.executeScript
+          if (browser.scripting?.executeScript) {
+            const results = await browser.scripting.executeScript({
+              target: { tabId },
+              func: scrapeFunc,
+            });
+            result = results?.[0]?.result;
+          } else {
+            // Firefox MV2 fallback
+            const results = await browser.tabs.executeScript(tabId, {
+              code: `(${scrapeFunc.toString()})()`,
+            });
+            result = results?.[0];
+          }
+
+          if (result) {
+            return { success: true, data: result };
           }
           return { success: false, error: 'Could not scrape page' };
         } catch (error) {
@@ -709,7 +721,13 @@ export default defineBackground(() => {
   // Make clicking the extension icon open the side panel directly
   try {
     if (browser.sidePanel) {
+      // Chrome MV3: use sidePanel API
       (browser.sidePanel as any).setPanelBehavior({ openPanelOnActionClick: true });
+    } else if (browser.sidebarAction) {
+      // Firefox: toggle sidebar on toolbar icon click
+      browser.browserAction.onClicked.addListener(() => {
+        browser.sidebarAction.toggle();
+      });
     }
   } catch (error) {
     console.warn('Could not set side panel behavior:', error);
