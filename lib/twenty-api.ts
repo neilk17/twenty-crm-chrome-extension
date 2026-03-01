@@ -239,6 +239,8 @@ function formatGraphQLErrors(
 export class TwentyApiClient {
   private baseUrl: string;
   private token: string | null = null;
+  private refreshToken: string | null = null;
+  private onTokenRefreshed: ((newToken: string) => void) | null = null;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -246,6 +248,75 @@ export class TwentyApiClient {
 
   setToken(token: string) {
     this.token = token;
+  }
+
+  setRefreshToken(refreshToken: string) {
+    this.refreshToken = refreshToken;
+  }
+
+  setOnTokenRefreshed(callback: (newToken: string) => void) {
+    this.onTokenRefreshed = callback;
+  }
+
+  async renewToken(): Promise<string | null> {
+    if (!this.refreshToken) {
+      return null;
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/graphql`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: `
+            mutation RenewToken($appToken: String!) {
+              renewToken(appToken: $appToken) {
+                tokens {
+                  accessToken { token expiresAt }
+                  refreshToken { token expiresAt }
+                }
+              }
+            }
+          `,
+          variables: { appToken: this.refreshToken },
+        }),
+      });
+
+      if (!response.ok) {
+        console.warn('[Twenty] Token renewal HTTP error:', response.status);
+        return null;
+      }
+
+      const result = await response.json() as {
+        data?: { renewToken?: { tokens?: { accessToken?: { token: string }; refreshToken?: { token: string } } } };
+        errors?: Array<{ message: string }>;
+      };
+
+      if (result.errors?.length) {
+        console.warn('[Twenty] Token renewal GraphQL error:', result.errors[0].message);
+        return null;
+      }
+
+      const newAccessToken = result.data?.renewToken?.tokens?.accessToken?.token;
+      const newRefreshToken = result.data?.renewToken?.tokens?.refreshToken?.token;
+
+      if (!newAccessToken) {
+        console.warn('[Twenty] Token renewal returned no access token');
+        return null;
+      }
+
+      console.log('[Twenty] Token renewed successfully');
+      this.token = newAccessToken;
+      if (newRefreshToken) {
+        this.refreshToken = newRefreshToken;
+      }
+
+      this.onTokenRefreshed?.(newAccessToken);
+      return newAccessToken;
+    } catch (error) {
+      console.error('[Twenty] Error renewing token:', error);
+      return null;
+    }
   }
 
   // Upload an image via GraphQL multipart upload
@@ -366,10 +437,17 @@ export class TwentyApiClient {
     try {
       response = await performRequest(this.token);
 
-      // Some Twenty deployments rely on cookie-based auth; retry without bearer once.
+      // Try token refresh on 401 before falling back to cookie-only.
       if ((response.status === 401 || response.status === 403) && this.token) {
-        console.warn('[Twenty] Bearer auth rejected, retrying request with cookie credentials only.');
-        response = await performRequest(null);
+        const newToken = await this.renewToken();
+        if (newToken) {
+          console.log('[Twenty] Retrying request with refreshed token.');
+          response = await performRequest(newToken);
+        } else {
+          // Some Twenty deployments rely on cookie-based auth; retry without bearer once.
+          console.warn('[Twenty] Bearer auth rejected, retrying request with cookie credentials only.');
+          response = await performRequest(null);
+        }
       }
     } catch (error) {
       // Network error (CORS, DNS, etc.)
@@ -959,6 +1037,32 @@ export class TwentyApiClient {
       return parseInt(match[1].replace(/,/g, ''), 10);
     }
     return undefined;
+  }
+}
+
+// Helper to extract the refresh token from Twenty's tokenPair cookie
+export function extractRefreshTokenFromCookie(cookieValue: string): string | null {
+  try {
+    let normalized = cookieValue.trim();
+    // URL-decode up to 2 times
+    for (let i = 0; i < 2; i++) {
+      try {
+        const decoded = decodeURIComponent(normalized);
+        if (decoded === normalized) break;
+        normalized = decoded;
+      } catch {
+        break;
+      }
+    }
+
+    const tokenPair = JSON.parse(normalized) as TwentyTokenPair;
+    const raw = tokenPair.refreshToken?.token;
+    if (typeof raw !== 'string' || !raw.trim()) return null;
+
+    const value = raw.trim().replace(/^"+|"+$/g, '');
+    return value.startsWith('Bearer ') ? value.slice(7).trim() : value;
+  } catch {
+    return null;
   }
 }
 
