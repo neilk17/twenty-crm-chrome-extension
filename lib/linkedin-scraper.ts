@@ -15,10 +15,10 @@ export function getLinkedInPageType(url: string): 'person' | 'company' | null {
 export function getLinkedInIdentifier(url: string): string | null {
   const personMatch = url.match(/linkedin\.com\/in\/([^/?]+)/);
   if (personMatch) return personMatch[1];
-  
+
   const companyMatch = url.match(/linkedin\.com\/company\/([^/?]+)/);
   if (companyMatch) return companyMatch[1];
-  
+
   return null;
 }
 
@@ -194,54 +194,101 @@ function resolveCompanyWebsite(jsonLdWebsite?: string): string {
   return '';
 }
 
+/**
+ * Walk up from an anchor element looking for the first sibling <p> with
+ * headline-like text (≥10 chars, not pronouns / degree badges / follower counts).
+ */
+function findNearbyHeadline(anchor: Element): string {
+  let el: Element | null = anchor;
+  for (let depth = 0; depth < 10 && el; depth++) {
+    const parent: Element | null = el.parentElement;
+    if (!parent || parent.tagName === 'MAIN' || parent.tagName === 'BODY') break;
+
+    const children = parent.children;
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i] as Element;
+      if (child.tagName !== 'P' || child.contains(anchor)) continue;
+      const text = child.textContent?.trim() || '';
+      if (text.length < 10) continue;
+      if (text.startsWith('·')) continue;
+      if (/^(he|she|they|ze)\//i.test(text)) continue;
+      if (/mutual connection/i.test(text)) continue;
+      if (/\bfollower/i.test(text)) continue;
+      return text;
+    }
+
+    el = parent;
+  }
+  return '';
+}
+
+/**
+ * Locate the location string by finding the "Contact info" link and reading
+ * the first sibling <p> in the same container.
+ */
+function findLocationNearContactInfo(): string {
+  for (const link of document.querySelectorAll('a')) {
+    if (link.textContent?.trim() !== 'Contact info') continue;
+    const container = link.closest('p')?.parentElement;
+    if (!container) continue;
+    const firstP = container.querySelector('p');
+    const text = firstP?.textContent?.trim() || '';
+    if (text && text !== 'Contact info' && !text.startsWith('·')) return text;
+  }
+  return '';
+}
+
 // Scrape person profile data from LinkedIn page
 export function scrapePersonProfile(): LinkedInProfileData | null {
   try {
     const linkedinUrl = window.location.href.split('?')[0];
-    
-    // Get name - LinkedIn uses h1 for the profile name with various class combinations
-    // Try multiple selectors as LinkedIn frequently changes their DOM
-    const nameElement = 
-      document.querySelector('h1.text-heading-xlarge') ||  // Old format
-      document.querySelector('h1.inline.t-24') ||          // New format (2024+)
-      document.querySelector('h1.t-24.v-align-middle') ||  // Another variant
-      document.querySelector('.pv-top-card h1') ||         // Fallback: h1 in top card
-      document.querySelector('h1[class*="break-words"]');  // Generic fallback
-    
+
+    const nameElement =
+      document.querySelector('[data-view-name="profile-top-card-verified-badge"] h2') ||
+      document.querySelector('h1.text-heading-xlarge') ||
+      document.querySelector('h1.inline.t-24') ||
+      document.querySelector('h1.t-24.v-align-middle') ||
+      document.querySelector('.pv-top-card h1') ||
+      document.querySelector('h1[class*="break-words"]') ||
+      document.querySelector('main h2');
+
     if (!nameElement) {
       console.warn('Could not find name element - tried multiple selectors');
       return null;
     }
-    
+
     const fullName = nameElement.textContent?.trim() || '';
     console.log('Scraped name:', fullName);
     const nameParts = parseFullName(fullName);
-    
-    // Get headline/title - div with text-body-medium class that has job title
-    // Use data-generated-suggestion-target attribute as it's more reliable
-    const headlineElement = 
+
+    const headlineElement =
       document.querySelector('div[data-generated-suggestion-target]') ||
       document.querySelector('div.text-body-medium.break-words');
-    const headline = headlineElement?.textContent?.trim() || '';
+    let headline = headlineElement?.textContent?.trim() || '';
+    if (!headline) {
+      headline = findNearbyHeadline(nameElement);
+    }
     console.log('Scraped headline:', headline);
-    
+
     // Get current company info
     const companyData = scrapeCurrentCompanyFromProfile();
     const currentCompany = companyData?.name || extractCompanyFromHeadline(headline);
     console.log('Scraped company data:', companyData);
     console.log('Current company:', currentCompany);
-    
+
     // Get profile image - try to get high quality version
     const profileImageUrl = scrapeProfileImage();
-    
-    // Get location - span with location info
-    const locationElement = 
+
+    const locationElement =
       document.querySelector('span.text-body-small.inline.t-black--light.break-words') ||
       document.querySelector('.text-body-small.inline.t-black--light.break-words') ||
       document.querySelector('.pv-top-card--list-bullet li:last-child');
-    const location = locationElement?.textContent?.trim() || '';
+    let location = locationElement?.textContent?.trim() || '';
+    if (!location) {
+      location = findLocationNearContactInfo();
+    }
     console.log('Scraped location:', location);
-    
+
     const result = {
       type: 'person' as const,
       linkedinUrl,
@@ -253,14 +300,14 @@ export function scrapePersonProfile(): LinkedInProfileData | null {
       profileImageUrl: profileImageUrl || undefined,
       location: location || undefined,
     };
-    
+
     console.log('Scraped profile data:', {
       fullName,
       firstName: result.firstName,
       lastName: result.lastName,
       headline: result.headline,
     });
-    
+
     return result;
   } catch (error) {
     console.error('Error scraping person profile:', error);
@@ -280,7 +327,7 @@ function scrapeProfileImage(): string {
     '.EntityPhoto-circle-9 img',                    // Entity photo class
     'img[title]',                                   // Fallback: img with title (usually name)
   ];
-  
+
   for (const selector of selectors) {
     const img = document.querySelector(selector) as HTMLImageElement;
     const candidateUrl = img?.currentSrc || img?.src || '';
@@ -295,7 +342,7 @@ function scrapeProfileImage(): string {
       return candidateUrl;
     }
   }
-  
+
   return '';
 }
 
@@ -304,61 +351,61 @@ function scrapeCurrentCompanyFromProfile(): { name: string; linkedinUrl?: string
   try {
     // Best method: Find button with aria-label containing "Entreprise actuelle" or "Current company"
     // This button contains company name, logo, and links to company page
-    const companyButton = 
+    const companyButton =
       document.querySelector('button[aria-label*="Entreprise actuelle"]') ||
       document.querySelector('button[aria-label*="Current company"]') ||
       document.querySelector('button[aria-label*="Empresa actual"]') ||  // Spanish
       document.querySelector('button[aria-label*="Aktuelles Unternehmen"]');  // German
-    
+
     if (companyButton) {
       // Extract company name from aria-label (format: "Entreprise actuelle: CompanyName. ...")
       const ariaLabel = companyButton.getAttribute('aria-label') || '';
       const nameMatch = ariaLabel.match(/:\s*([^.]+)/);
       const name = nameMatch ? nameMatch[1].trim() : '';
-      
+
       // Get company logo URL
       const logoImg = companyButton.querySelector('img');
       const logoUrl = logoImg?.src || undefined;
-      
+
       // Try to get company LinkedIn URL from nearby link or page navigation
       // The button itself doesn't have the URL, but we can try to find it elsewhere
       let linkedinUrl: string | undefined;
-      
+
       if (name) {
         console.log('Found company from button:', { name, logoUrl });
         return { name, linkedinUrl, logoUrl };
       }
     }
-    
+
     // Fallback: Try to find company link in the experience section or top card
-    const companyLink = 
+    const companyLink =
       document.querySelector('.pv-text-details__right-panel-item-text a[href*="/company/"]') ||
       document.querySelector('a[data-field="experience_company_logo"]') ||
       document.querySelector('.experience-item a[href*="/company/"]');
-    
+
     if (companyLink) {
       const href = companyLink.getAttribute('href') || '';
       const match = href.match(/\/company\/([^/?]+)/);
       const linkedinUrl = match ? `https://www.linkedin.com/company/${match[1]}/` : undefined;
-      
-      const name = companyLink.textContent?.trim() || 
+
+      const name = companyLink.textContent?.trim() ||
         companyLink.closest('.pv-text-details__right-panel-item-text')?.textContent?.trim() ||
         '';
-      
+
       if (name) {
         return { name, linkedinUrl };
       }
     }
-    
+
     // Last fallback: just get company name without URL
-    const companyElement = 
+    const companyElement =
       document.querySelector('.pv-text-details__right-panel-item-text') ||
       document.querySelector('[aria-label*="Current company"]');
-    
+
     if (companyElement) {
       return { name: companyElement.textContent?.trim() || '' };
     }
-    
+
     return null;
   } catch (error) {
     console.error('Error scraping company from profile:', error);
@@ -417,34 +464,34 @@ export function scrapeCompanyPage(): LinkedInCompanyData | null {
 // Main scraper function that detects page type and scrapes accordingly
 export function scrapeCurrentPage(): LinkedInData | null {
   const pageType = getLinkedInPageType(window.location.href);
-  
+
   if (pageType === 'person') {
     return scrapePersonProfile();
   }
-  
+
   if (pageType === 'company') {
     return scrapeCompanyPage();
   }
-  
+
   return null;
 }
 
 // Helper to parse full name into first and last name
 function parseFullName(fullName: string): { firstName: string; lastName: string } {
   const parts = fullName.trim().split(/\s+/);
-  
+
   if (parts.length === 0) {
     return { firstName: '', lastName: '' };
   }
-  
+
   if (parts.length === 1) {
     return { firstName: parts[0], lastName: '' };
   }
-  
+
   // Handle cases like "John van der Berg" - take first as firstName, rest as lastName
   const firstName = parts[0];
   const lastName = parts.slice(1).join(' ');
-  
+
   return { firstName, lastName };
 }
 
@@ -460,7 +507,7 @@ function extractCompanyFromHeadline(headline: string): string {
     /\bà\s+(.+?)(?:\s*\||$)/i,            // French: "à Company"
     /\ben\s+(.+?)(?:\s*\||$)/i,           // Spanish: "en Company"
   ];
-  
+
   for (const pattern of patterns) {
     const match = headline.match(pattern);
     if (match) {
@@ -469,6 +516,6 @@ function extractCompanyFromHeadline(headline: string): string {
       return company;
     }
   }
-  
+
   return '';
 }
