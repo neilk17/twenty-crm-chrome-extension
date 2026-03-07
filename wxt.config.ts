@@ -1,7 +1,7 @@
 import { defineConfig } from 'wxt';
 
 const buildChannel = process.env.BUILD_CHANNEL === 'beta' ? 'beta' : 'stable';
-const extensionVersion = '1.0.6';
+const extensionVersion = '1.0.7';
 const isBeta = buildChannel === 'beta';
 
 export default defineConfig({
@@ -33,8 +33,6 @@ export default defineConfig({
     host_permissions: [
       "https://www.linkedin.com/*",
       "https://linkedin.com/*",
-      "https://us.i.posthog.com/*",
-      "https://eu.i.posthog.com/*",
     ],
 
     // CRM domain access can be requested at runtime

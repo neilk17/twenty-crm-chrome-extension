@@ -17,7 +17,6 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getLinkedInPageType } from "../../lib/linkedin-scraper";
-import { track } from "../../lib/analytics";
 import type {
 	CaptureState,
 	ExtensionResponse,
@@ -152,7 +151,6 @@ export default function App() {
 	// Load settings on mount (intentionally run once; handlers are stable by convention)
 	// biome-ignore lint/correctness/useExhaustiveDependencies: mount-only init
 	useEffect(() => {
-		track("extension_opened", {});
 		loadSettings();
 		loadRecentCaptures();
 		setTimeout(() => {
@@ -319,7 +317,6 @@ export default function App() {
 
 			if (response.success) {
 				if (response.data?.exists && response.data.record) {
-					track("duplicate_detected", { type: pageType });
 					setCaptureState({
 						status: "exists",
 						existingRecord: {
@@ -423,7 +420,6 @@ export default function App() {
 	async function handleCapture() {
 		if (captureState.status !== "ready" || !captureState.data) return;
 
-		track("capture_initiated", { type: captureState.data.type });
 		setCaptureState({ ...captureState, status: "saving" });
 
 		try {
