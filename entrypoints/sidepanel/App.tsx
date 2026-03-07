@@ -406,7 +406,8 @@ export default function App() {
 				) {
 					setCaptureState({ status: "idle", error: "Configure Twenty URL" });
 				} else {
-					setCaptureState({ status: "error", error: duplicateResponse.error });
+					// Duplicate check failed transiently — still show the domain so the user can add it.
+					setCaptureState({ status: "ready", data: { type: "company", domain } as DomainCompanyData });
 				}
 			}
 		} catch (err) {

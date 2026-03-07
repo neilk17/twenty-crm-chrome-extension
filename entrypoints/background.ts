@@ -424,18 +424,11 @@ async function createCompanyByDomain(
 ): Promise<{ id: string }> {
   const client = await getApiClient();
 
-  // Create company data with domain
-  const companyData: DomainCompanyData = {
-    type: 'company',
-    domain,
-    name: companyName || domain, // Use domain as name if no name provided
-  };
-
   // Convert to LinkedInCompanyData format for API (without LinkedIn URL)
   const apiData: LinkedInCompanyData = {
     type: 'company',
     linkedinUrl: '', // Empty LinkedIn URL for domain-only companies
-    name: companyData.name || domain,
+    name: companyName || '', // Leave name blank if not provided
     website: `https://${domain}`, // Use domain as website URL
   };
 
@@ -444,7 +437,7 @@ async function createCompanyByDomain(
   // Save to recent captures (using domain as identifier since there's no LinkedIn URL)
   await addToRecentCaptures({
     linkedinUrl: `domain:${domain}`, // Use domain as identifier
-    name: company.name,
+    name: company.name || domain, // Fall back to domain for display since name may be blank
     type: 'company',
     twentyId: company.id,
   });
