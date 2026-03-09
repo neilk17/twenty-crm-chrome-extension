@@ -1,4 +1,4 @@
-import { TwentyApiClient, extractTokenFromCookie } from '../lib/twenty-api';
+import { TwentyApiClient, extractTokenFromCookie, extractRefreshTokenFromCookie } from '../lib/twenty-api';
 import { getSettings, saveSettings, addToRecentCaptures, getRecentCaptures } from '../lib/storage';
 import { getNormalizedDomain } from '../lib/domain-extractor';
 import type { ExtensionMessage, ExtensionResponse, LinkedInProfileData, LinkedInCompanyData, DomainCompanyData } from '../types';
@@ -6,7 +6,7 @@ import type { ExtensionMessage, ExtensionResponse, LinkedInProfileData, LinkedIn
 // Cache for API client
 let apiClient: TwentyApiClient | null = null;
 let cachedTwentyUrl: string | null = null;
-let cachedAuthToken: { apiBaseUrl: string; token: string; checkedAt: number } | null = null;
+let cachedAuthToken: { apiBaseUrl: string; token: string; refreshToken: string | null; checkedAt: number } | null = null;
 
 const AUTH_TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -152,12 +152,21 @@ async function getApiClient(): Promise<TwentyApiClient> {
   }
 
   // Get fresh token from cookie
-  const token = await getAuthToken(settings.twentyUrl);
-  if (!token) {
+  const authResult = await getAuthToken(settings.twentyUrl);
+  if (!authResult) {
     throw new Error('No authentication token found. Please log in to Twenty CRM.');
   }
 
-  apiClient.setToken(token);
+  apiClient.setToken(authResult.token);
+  if (authResult.refreshToken) {
+    apiClient.setRefreshToken(authResult.refreshToken);
+    apiClient.setOnTokenRefreshed((newToken) => {
+      // Update the cache so subsequent calls use the refreshed token
+      if (cachedAuthToken) {
+        cachedAuthToken = { ...cachedAuthToken, token: newToken, checkedAt: Date.now() };
+      }
+    });
+  }
   return apiClient;
 }
 
@@ -189,12 +198,13 @@ function getTwentyCookieUrls(twentyUrl: string): string[] {
 }
 
 // Get auth token from Twenty's cookie
-async function getAuthToken(twentyUrl: string): Promise<string | null> {
+async function getAuthToken(twentyUrl: string): Promise<{ token: string; refreshToken: string | null } | null> {
   try {
     const apiBaseUrl = resolveTwentyApiBaseUrl(twentyUrl);
     const cookieUrls = getTwentyCookieUrls(twentyUrl);
     const cookieNames = ['tokenPair', 'accessToken', 'access-token'];
     const tokenCandidates: string[] = [];
+    let refreshToken: string | null = null;
     let checkedPermittedHost = false;
 
     for (const url of cookieUrls) {
@@ -222,10 +232,17 @@ async function getAuthToken(twentyUrl: string): Promise<string | null> {
             tokenCandidates.push(token);
           }
           console.log('Successfully extracted token candidate from cookie', cookieName, 'for', url);
-          continue;
+        } else {
+          console.warn('Cookie found but token extraction failed for', url, cookieName);
         }
 
-        console.warn('Cookie found but token extraction failed for', url, cookieName);
+        // Extract refresh token if we don't have one yet
+        if (!refreshToken) {
+          refreshToken = extractRefreshTokenFromCookie(cookie.value);
+          if (refreshToken) {
+            console.log('Extracted refresh token from cookie', cookieName, 'for', url);
+          }
+        }
       }
     }
 
@@ -243,7 +260,7 @@ async function getAuthToken(twentyUrl: string): Promise<string | null> {
       && (Date.now() - cachedAuthToken.checkedAt) < AUTH_TOKEN_CACHE_TTL_MS
       && tokenCandidates.includes(cachedAuthToken.token)
     ) {
-      return cachedAuthToken.token;
+      return { token: cachedAuthToken.token, refreshToken: cachedAuthToken.refreshToken };
     }
 
     for (const candidateToken of tokenCandidates) {
@@ -252,15 +269,16 @@ async function getAuthToken(twentyUrl: string): Promise<string | null> {
         cachedAuthToken = {
           apiBaseUrl,
           token: candidateToken,
+          refreshToken,
           checkedAt: Date.now(),
         };
         console.log('Validated auth token candidate for', apiBaseUrl);
-        return candidateToken;
+        return { token: candidateToken, refreshToken };
       }
     }
 
     console.warn('Could not validate token candidates; using first extracted token as fallback.');
-    return tokenCandidates[0];
+    return { token: tokenCandidates[0], refreshToken };
   } catch (error) {
     console.error('Error getting auth token:', error);
     return null;
@@ -487,8 +505,8 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
         if (!settings.twentyUrl) {
           return { success: false, error: 'Twenty URL not configured' };
         }
-        const token = await getAuthToken(settings.twentyUrl);
-        return { success: !!token, data: { hasToken: !!token } };
+        const authResult = await getAuthToken(settings.twentyUrl);
+        return { success: !!authResult, data: { hasToken: !!authResult } };
       }
 
       case 'CHECK_DUPLICATE': {
