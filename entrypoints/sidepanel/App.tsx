@@ -33,6 +33,40 @@ type RecentCapture = {
 	twentyId: string;
 };
 
+type BrowserTab = {
+	id?: number;
+	url?: string;
+	active?: boolean;
+};
+
+function isBrowserInternalUrl(url: string): boolean {
+	try {
+		const protocol = new URL(url).protocol;
+		return (
+			protocol === "chrome:" ||
+			protocol === "chrome-extension:" ||
+			protocol === "edge:" ||
+			protocol === "moz-extension:" ||
+			protocol === "about:" ||
+			protocol === "brave:"
+		);
+	} catch {
+		return true;
+	}
+}
+
+function isConfiguredTwentyTab(url: string, twentyUrl: string): boolean {
+	if (!twentyUrl) return false;
+
+	try {
+		const tabOrigin = new URL(url).origin;
+		const configuredOrigin = new URL(twentyUrl).origin;
+		return tabOrigin === configuredOrigin;
+	} catch {
+		return false;
+	}
+}
+
 export default function App() {
 	const [twentyUrl, setTwentyUrl] = useState("");
 	const [hasToken, setHasToken] = useState(false);
@@ -219,43 +253,20 @@ export default function App() {
 
 	async function checkCurrentTab() {
 		try {
-			let tabs = await browser.tabs.query({
-				active: true,
-				currentWindow: true,
-			});
+			const activeTab = await getActivePageTab();
 
-			if (!tabs || tabs.length === 0 || !tabs[0]?.url) {
-				tabs = await browser.tabs.query({
-					active: true,
-				});
-			}
-
-			// If still no tabs, try getting the last focused window
-			if (!tabs || tabs.length === 0 || !tabs[0]?.url) {
-				const windows = await browser.windows.getAll({ populate: true });
-				for (const window of windows) {
-					if (window.tabs) {
-						const activeTab = window.tabs.find((tab) => tab.active);
-						if (activeTab?.url) {
-							tabs = [activeTab];
-							break;
-						}
-					}
-				}
-			}
-
-			if (tabs && tabs.length > 0 && tabs[0]?.url) {
-				const url = tabs[0].url;
+			if (activeTab?.url) {
+				const url = activeTab.url;
 				console.log("Current tab URL:", url);
 				setCurrentTabUrl(url);
 				const pageType = getLinkedInPageType(url);
 				console.log("Page type:", pageType);
-				if (pageType && tabs[0].id) {
+				if (pageType && activeTab.id) {
 					// LinkedIn page - use existing flow
-					await checkPageForCapture(tabs[0].id, url, pageType);
-				} else if (tabs[0].id) {
+					await checkPageForCapture(activeTab.id, url, pageType);
+				} else if (activeTab.id) {
 					// Non-LinkedIn page - check for domain-based company
-					await checkDomainForCapture(tabs[0].id, url);
+					await checkDomainForCapture(activeTab.id, url);
 				} else {
 					setCaptureState({ status: "idle" });
 				}
@@ -269,6 +280,58 @@ export default function App() {
 			setCurrentTabUrl(null);
 			setCaptureState({ status: "idle" });
 		}
+	}
+
+	async function getActivePageTab(): Promise<BrowserTab | null> {
+		const candidates: BrowserTab[] = [];
+		const seenTabIds = new Set<number>();
+
+		const pushTabs = (tabs?: BrowserTab[]) => {
+			for (const tab of tabs || []) {
+				if (!tab?.id || seenTabIds.has(tab.id) || !tab.url) continue;
+				if (isBrowserInternalUrl(tab.url)) continue;
+				seenTabIds.add(tab.id);
+				candidates.push(tab);
+			}
+		};
+
+		pushTabs(
+			await browser.tabs.query({
+				active: true,
+				lastFocusedWindow: true,
+			}),
+		);
+
+		pushTabs(
+			await browser.tabs.query({
+				active: true,
+				currentWindow: true,
+			}),
+		);
+
+		try {
+			const lastFocusedWindow = await browser.windows.getLastFocused({
+				populate: true,
+			});
+			pushTabs(lastFocusedWindow.tabs);
+		} catch (error) {
+			console.warn("Could not inspect last focused window:", error);
+		}
+
+		pushTabs(
+			await browser.tabs.query({
+				active: true,
+			}),
+		);
+
+		if (candidates.length === 0) {
+			return null;
+		}
+
+		return (
+			candidates.find((tab) => !isConfiguredTwentyTab(tab.url || "", twentyUrl)) ||
+			candidates[0]
+		);
 	}
 
 	async function checkPageForCapture(
@@ -361,6 +424,11 @@ export default function App() {
 			})) as ExtensionResponse<{ domain: string; url: string }>;
 
 			if (!domainResponse.success || !domainResponse.data?.domain) {
+				setCaptureState({ status: "idle" });
+				return;
+			}
+
+			if (isConfiguredTwentyTab(domainResponse.data.url, twentyUrl)) {
 				setCaptureState({ status: "idle" });
 				return;
 			}
@@ -518,11 +586,8 @@ export default function App() {
 	async function handleUpdate() {
 		if (!captureState.existingRecord || !currentTabUrl) return;
 
-		const tabs = await browser.tabs.query({
-			active: true,
-			currentWindow: true,
-		});
-		if (!tabs[0]?.id) return;
+		const activeTab = await getActivePageTab();
+		if (!activeTab?.id) return;
 
 		setCaptureState({ ...captureState, status: "saving" });
 
@@ -530,7 +595,7 @@ export default function App() {
 			// Get fresh data from content script
 			let scrapedData: LinkedInData | undefined;
 			try {
-				const scrapeResponse = (await browser.tabs.sendMessage(tabs[0].id, {
+				const scrapeResponse = (await browser.tabs.sendMessage(activeTab.id, {
 					type: "GET_PAGE_DATA",
 				})) as ExtensionResponse<LinkedInData>;
 				if (scrapeResponse.success && scrapeResponse.data) {
