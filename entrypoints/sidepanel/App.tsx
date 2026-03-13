@@ -2,6 +2,15 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+	Card,
+	CardAction,
+	CardContent,
+	CardDescription,
+	CardFooter,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
+import {
 	InputGroup,
 	InputGroupAddon,
 	InputGroupInput,
@@ -9,7 +18,6 @@ import {
 import { Label } from "@/components/ui/label";
 import {
 	Building2,
-	ExternalLink,
 	Link,
 	RefreshCw,
 	Sparkles,
@@ -67,13 +75,35 @@ function isConfiguredTwentyTab(url: string, twentyUrl: string): boolean {
 	}
 }
 
+function maskTwentyUrl(url: string): string {
+	if (!url) return "";
+
+	try {
+		const parsed = new URL(url);
+		const hostname = parsed.hostname;
+		if (hostname.length <= 4) {
+			return `${parsed.protocol}//${"*".repeat(hostname.length)}`;
+		}
+
+		const visibleStart = hostname.slice(0, 2);
+		const visibleEnd = hostname.slice(-2);
+		const maskedMiddle = "•".repeat(Math.max(hostname.length - 4, 4));
+
+		return `${parsed.protocol}//${visibleStart}${maskedMiddle}${visibleEnd}`;
+	} catch {
+		return "Saved";
+	}
+}
+
 export default function App() {
-	const [twentyUrl, setTwentyUrl] = useState("");
+	const [savedTwentyUrl, setSavedTwentyUrl] = useState("");
+	const [twentyUrlInput, setTwentyUrlInput] = useState("");
 	const [hasToken, setHasToken] = useState(false);
 	const [isConnected, setIsConnected] = useState(false);
 	const [isLoading, setIsLoading] = useState(true);
 	const [isSaving, setIsSaving] = useState(false);
 	const [isTesting, setIsTesting] = useState(false);
+	const [isEditingTwentyUrl, setIsEditingTwentyUrl] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [success, setSuccess] = useState<string | null>(null);
 	const [recentCaptures, setRecentCaptures] = useState<RecentCapture[]>([]);
@@ -87,7 +117,16 @@ export default function App() {
 	const [isCheckingPage, setIsCheckingPage] = useState(false);
 
 	// Computed
-	const isConfigured = useMemo(() => !!twentyUrl, [twentyUrl]);
+	const isConfigured = useMemo(() => !!savedTwentyUrl, [savedTwentyUrl]);
+	const maskedTwentyUrl = useMemo(
+		() => maskTwentyUrl(savedTwentyUrl),
+		[savedTwentyUrl],
+	);
+	const isOnTwentyWorkspace = useMemo(
+		() =>
+			currentTabUrl ? isConfiguredTwentyTab(currentTabUrl, savedTwentyUrl) : false,
+		[currentTabUrl, savedTwentyUrl],
+	);
 
 	const connectionStatus = useMemo(() => {
 		if (!isConfigured) return "not-configured";
@@ -110,6 +149,33 @@ export default function App() {
 				return "Unknown";
 		}
 	}, [connectionStatus]);
+
+	const setupSteps = useMemo(
+		() => [
+			{
+				title: "Save your Twenty URL",
+				complete: isConfigured,
+				description: isConfigured
+					? "Saved in this browser."
+					: "Enter the exact URL where you open Twenty, then click Save.",
+			},
+			{
+				title: "Allow access and test it",
+				complete: isConnected,
+				description: isConnected
+					? "The extension can reach your Twenty workspace."
+					: "After saving, allow the browser permission prompt and run Test Connection.",
+			},
+			{
+				title: "Sign in to Twenty",
+				complete: hasToken,
+				description: hasToken
+					? "An active Twenty session was detected."
+					: "Open Twenty, sign in, then come back to capture LinkedIn pages and company sites.",
+			},
+		],
+		[hasToken, isConfigured, isConnected],
+	);
 
 	function normalizeTwentyUrl(urlValue: string): string {
 		let url = urlValue.trim();
@@ -216,10 +282,10 @@ export default function App() {
 	// Re-check the active LinkedIn tab once configuration/auth become available.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: only re-run when URL/token change
 	useEffect(() => {
-		if (twentyUrl && hasToken) {
+		if (savedTwentyUrl && hasToken) {
 			checkCurrentTab();
 		}
-	}, [twentyUrl, hasToken]);
+	}, [savedTwentyUrl, hasToken]);
 
 	// Reset auto-fetch attempts whenever the active URL changes.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: currentTabUrl is the trigger for reset
@@ -230,7 +296,7 @@ export default function App() {
 	// If state is still idle on a LinkedIn page, retry automatically without requiring a button click.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: checkCurrentTab intentionally not in deps to avoid retry loops
 	useEffect(() => {
-		if (!twentyUrl || !hasToken || isCheckingPage || isLoading) return;
+		if (!savedTwentyUrl || !hasToken || isCheckingPage || isLoading) return;
 		if (!currentTabUrl || !getLinkedInPageType(currentTabUrl)) return;
 		if (captureState.status !== "idle") return;
 		if (autoFetchAttempts >= 3) return;
@@ -242,7 +308,7 @@ export default function App() {
 
 		return () => clearTimeout(timeout);
 	}, [
-		twentyUrl,
+		savedTwentyUrl,
 		hasToken,
 		isCheckingPage,
 		isLoading,
@@ -329,7 +395,9 @@ export default function App() {
 		}
 
 		return (
-			candidates.find((tab) => !isConfiguredTwentyTab(tab.url || "", twentyUrl)) ||
+			candidates.find(
+				(tab) => !isConfiguredTwentyTab(tab.url || "", savedTwentyUrl),
+			) ||
 			candidates[0]
 		);
 	}
@@ -339,7 +407,7 @@ export default function App() {
 		url: string,
 		pageType: "person" | "company",
 	) {
-		if (!twentyUrl || !hasToken) {
+		if (!savedTwentyUrl || !hasToken) {
 			setCaptureState({ status: "idle" });
 			return;
 		}
@@ -428,7 +496,7 @@ export default function App() {
 				return;
 			}
 
-			if (isConfiguredTwentyTab(domainResponse.data.url, twentyUrl)) {
+			if (isConfiguredTwentyTab(domainResponse.data.url, savedTwentyUrl)) {
 				setCaptureState({ status: "idle" });
 				return;
 			}
@@ -576,10 +644,10 @@ export default function App() {
 	}
 
 	async function handleOpenInTwenty() {
-		if (!captureState.existingRecord || !twentyUrl) return;
+		if (!captureState.existingRecord || !savedTwentyUrl) return;
 		const { id, type } = captureState.existingRecord;
 		browser.tabs.create({
-			url: `${twentyUrl}/object/${type}/${id}`,
+			url: `${savedTwentyUrl}/object/${type}/${id}`,
 		});
 	}
 
@@ -681,11 +749,18 @@ export default function App() {
 			})) as ExtensionResponse<{ twentyUrl: string; hasToken: boolean }>;
 
 			if (response.success && response.data) {
-				setTwentyUrl(normalizeTwentyUrl(response.data.twentyUrl || ""));
+				const normalizedTwentyUrl = normalizeTwentyUrl(
+					response.data.twentyUrl || "",
+				);
+				setSavedTwentyUrl(normalizedTwentyUrl);
+				setTwentyUrlInput(normalizedTwentyUrl);
+				setIsEditingTwentyUrl(!normalizedTwentyUrl);
 				setHasToken(response.data.hasToken || false);
 
 				if (response.data.hasToken) {
-					await testConnection();
+					await testConnection(normalizedTwentyUrl, { showSuccess: false });
+				} else {
+					setIsConnected(false);
 				}
 			}
 		} catch (err) {
@@ -711,13 +786,13 @@ export default function App() {
 	}
 
 	async function saveSettings() {
-		if (!twentyUrl) {
+		if (!twentyUrlInput) {
 			setError("Please enter your Twenty URL");
 			return;
 		}
 
-		const url = normalizeTwentyUrl(twentyUrl);
-		setTwentyUrl(url);
+		const url = normalizeTwentyUrl(twentyUrlInput);
+		setTwentyUrlInput(url);
 
 		setIsSaving(true);
 		setError(null);
@@ -738,6 +813,9 @@ export default function App() {
 			})) as ExtensionResponse;
 
 			if (response.success) {
+				setSavedTwentyUrl(url);
+				setTwentyUrlInput(url);
+				setIsEditingTwentyUrl(false);
 				setSuccess("Settings saved!");
 				// Reload to check token
 				await loadSettings();
@@ -755,8 +833,12 @@ export default function App() {
 		}
 	}
 
-	async function testConnection() {
-		if (!twentyUrl) {
+	async function testConnection(
+		urlOverride?: string,
+		options?: { showSuccess?: boolean },
+	) {
+		const targetUrl = normalizeTwentyUrl(urlOverride || savedTwentyUrl);
+		if (!targetUrl) {
 			setError("Please enter your Twenty URL");
 			return;
 		}
@@ -765,8 +847,7 @@ export default function App() {
 		setError(null);
 
 		try {
-			const normalizedUrl = normalizeTwentyUrl(twentyUrl);
-			const hasPermission = await ensureTwentyPermission(normalizedUrl);
+			const hasPermission = await ensureTwentyPermission(targetUrl);
 			if (!hasPermission) {
 				setError(
 					"Permission denied. Please allow access to your Twenty domain.",
@@ -786,7 +867,7 @@ export default function App() {
 				setError(
 					response.error || "Connection test failed. Check your URL and login.",
 				);
-			} else {
+			} else if (options?.showSuccess !== false) {
 				setSuccess("Connection successful!");
 				setTimeout(() => setSuccess(null), 3000);
 			}
@@ -801,17 +882,31 @@ export default function App() {
 		}
 	}
 
+	function handleEditTwentyUrl() {
+		setTwentyUrlInput(savedTwentyUrl);
+		setIsEditingTwentyUrl(true);
+		setError(null);
+		setSuccess(null);
+	}
+
+	function handleCancelTwentyUrlEdit() {
+		setTwentyUrlInput(savedTwentyUrl);
+		setIsEditingTwentyUrl(false);
+		setError(null);
+		setSuccess(null);
+	}
+
 	function openTwenty() {
-		if (twentyUrl) {
-			browser.tabs.create({ url: twentyUrl });
+		if (savedTwentyUrl) {
+			browser.tabs.create({ url: savedTwentyUrl });
 		}
 	}
 
 	function openRecord(record: { twentyId: string; type: string }) {
-		if (twentyUrl) {
+		if (savedTwentyUrl) {
 			// URL uses singular: /object/person/ and /object/company/
 			browser.tabs.create({
-				url: `${twentyUrl}/object/${record.type}/${record.twentyId}`,
+				url: `${savedTwentyUrl}/object/${record.type}/${record.twentyId}`,
 			});
 		}
 	}
@@ -842,9 +937,187 @@ export default function App() {
 				</div>
 			) : (
 				<main className="mx-4 pb-5 mt-4">
+					<section className="mb-5">
+						<Card>
+							<CardHeader>
+								<div className="flex flex-col gap-2">
+									<CardTitle>
+										{isConfigured && !isEditingTwentyUrl
+											? hasToken
+												? "Twenty is connected"
+												: "Finish your Twenty setup"
+											: "Set up Twenty"}
+									</CardTitle>
+									<CardDescription>
+										{isConfigured && !isEditingTwentyUrl
+											? "Your workspace URL is saved. The extension ignores this host when suggesting companies."
+											: "New install? Follow these steps once, then use the extension on LinkedIn pages or any company website."}
+									</CardDescription>
+								</div>
+								<CardAction>
+									<Badge variant="secondary">{statusText}</Badge>
+								</CardAction>
+							</CardHeader>
+							<CardContent className="flex flex-col gap-4">
+								<div className="flex flex-col gap-3 rounded-lg bg-sidebar/50 p-4">
+									{setupSteps.map((step, index) => (
+										<div key={step.title} className="flex items-start gap-3">
+											<Badge variant={step.complete ? "default" : "outline"}>
+												{step.complete ? "Done" : index + 1}
+											</Badge>
+											<div className="flex flex-col gap-1">
+												<p className="text-sm font-medium">{step.title}</p>
+												<p className="text-xs text-muted-foreground">
+													{step.description}
+												</p>
+											</div>
+										</div>
+									))}
+								</div>
+
+								{isConfigured && !isEditingTwentyUrl ? (
+									<div className="flex flex-col gap-2 rounded-lg border p-4">
+										<div className="flex flex-col gap-1">
+											<p className="text-xs font-medium text-muted-foreground">
+												Saved Twenty URL
+											</p>
+											<p className="font-mono text-sm">{maskedTwentyUrl}</p>
+										</div>
+										<p className="text-xs text-muted-foreground">
+											Your CRM host is excluded from website company capture, so
+											the extension will not try to add it as a new company.
+										</p>
+									</div>
+								) : (
+									<div className="grid w-full items-center gap-3">
+										<Label htmlFor="twentyUrl">Twenty URL</Label>
+										<InputGroup>
+											<InputGroupInput
+												id="twentyUrl"
+												placeholder="https://app.twenty.com or your domain"
+												value={twentyUrlInput}
+												onChange={(e) => setTwentyUrlInput(e.target.value)}
+												onKeyDown={handleKeyDown}
+											/>
+
+											<InputGroupAddon align="inline-end">
+												<Badge variant="secondary">{statusText}</Badge>
+											</InputGroupAddon>
+										</InputGroup>
+
+										<p className="text-xs text-muted-foreground">
+											Use the same URL you open for Twenty. Save it once, allow
+											access when prompted, then sign in to Twenty.
+										</p>
+									</div>
+								)}
+
+								{isConfigured && !hasToken && !isEditingTwentyUrl && (
+									<div className="rounded-lg border border-dashed p-4">
+										<p className="text-sm font-medium">One step left</p>
+										<p className="mt-1 text-xs text-muted-foreground">
+											Open Twenty, sign in, then come back here and click
+											&quot;I&apos;ve signed in&quot;.
+										</p>
+									</div>
+								)}
+
+								{error && (
+									<div className="rounded-lg bg-sidebar px-3 py-2.5 text-[13px] text-red-600">
+										{error}
+									</div>
+								)}
+								{success && (
+									<div className="rounded-lg bg-sidebar px-3 py-2.5 text-[13px] text-green-600">
+										{success}
+									</div>
+								)}
+							</CardContent>
+							<CardFooter className="flex flex-col gap-2 sm:flex-row">
+								{isConfigured && !isEditingTwentyUrl ? (
+									<>
+										<Button className="flex-1" onClick={openTwenty}>
+											Open Twenty
+										</Button>
+										<Button
+											className="flex-1"
+											variant="outline"
+											onClick={
+												hasToken
+													? () => testConnection(undefined, { showSuccess: true })
+													: loadSettings
+											}
+											disabled={isTesting}
+										>
+											{isTesting
+												? "Testing..."
+												: hasToken
+													? "Test Connection"
+													: "I've signed in"}
+										</Button>
+										<Button
+											className="flex-1"
+											variant="ghost"
+											onClick={handleEditTwentyUrl}
+										>
+											Edit URL
+										</Button>
+									</>
+								) : (
+									<>
+										<Button
+											className="flex-1"
+											disabled={isSaving}
+											onClick={saveSettings}
+										>
+											{isSaving ? "Saving..." : "Save URL"}
+										</Button>
+										<Button
+											className="flex-1"
+											variant="outline"
+											disabled={isTesting || !isConfigured || isEditingTwentyUrl}
+											onClick={() => testConnection(undefined, { showSuccess: true })}
+										>
+											{isTesting ? "Testing..." : "Test Connection"}
+										</Button>
+										{isConfigured && (
+											<Button
+												className="flex-1"
+												variant="ghost"
+												onClick={handleCancelTwentyUrlEdit}
+											>
+												Cancel
+											</Button>
+										)}
+									</>
+								)}
+							</CardFooter>
+						</Card>
+					</section>
+
 					{isConfigured && hasToken && (
 						<section className="mb-5">
-							{currentTabUrl && getLinkedInPageType(currentTabUrl) ? (
+							{isOnTwentyWorkspace ? (
+								<div className="bg-card rounded-lg border p-4">
+									<div className="mb-2 flex items-center gap-2">
+										<h3 className="text-sm font-semibold">
+											You&apos;re on your Twenty workspace
+										</h3>
+									</div>
+									<p className="mb-3 text-xs text-muted-foreground">
+										Company capture is disabled on your saved Twenty URL so the
+										extension does not try to add your CRM as a company.
+									</p>
+									<Button
+										onClick={checkCurrentTab}
+										className="w-full"
+										variant="outline"
+										size="sm"
+									>
+										Check active page
+									</Button>
+								</div>
+							) : currentTabUrl && getLinkedInPageType(currentTabUrl) ? (
 								<div className="bg-card rounded-lg p-4 border ">
 									{captureState.data && (
 										<div className="mb-3 flex flex-col gap-2">
@@ -1001,17 +1274,6 @@ export default function App() {
 						</section>
 					)}
 
-					{isConfigured && !hasToken && (
-						<section className="mb-4">
-							<p className="text-sm text-muted-foreground mb-3">
-								Please log in to your Twenty instance to use the extension.
-							</p>
-							<Button onClick={openTwenty} size="sm" className="w-full">
-								Open Twenty →
-							</Button>
-						</section>
-					)}
-
 					{recentCaptures.length > 0 && (
 						<section className="mb-5">
 							<Label className="text-sm font-medium">Recently Added</Label>
@@ -1053,69 +1315,6 @@ export default function App() {
 							</ul>
 						</section>
 					)}
-
-					<section className="mb-5">
-						<div className="grid w-full items-center gap-3">
-							<Label htmlFor="twentyUrl">
-								<a
-									className="flex items-center gap-2"
-									href={twentyUrl}
-									target="_blank"
-								>
-									Twenty URL
-									<ExternalLink className="size-4" />
-								</a>
-							</Label>
-							<InputGroup>
-								<InputGroupInput
-									placeholder="https://your-twenty.com"
-									value={twentyUrl}
-									onChange={(e) => setTwentyUrl(e.target.value)}
-									onKeyDown={handleKeyDown}
-								/>
-
-								<InputGroupAddon align="inline-end">
-									<Badge variant="secondary" className="">
-										{statusText}
-									</Badge>
-								</InputGroupAddon>
-							</InputGroup>
-
-							<p className="text-xs text-muted-foreground ">
-								Your self-hosted Twenty instance URL
-							</p>
-						</div>
-
-						<div className="flex gap-2 pt-4">
-							<Button
-								className="flex-1"
-								variant="ghost"
-								disabled={isSaving}
-								onClick={saveSettings}
-							>
-								{isSaving ? "Saving..." : "Save"}
-							</Button>
-							<Button
-								className="flex-1"
-								variant="outline"
-								disabled={isTesting || !isConfigured}
-								onClick={testConnection}
-							>
-								{isTesting ? "Testing..." : "Test Connection"}
-							</Button>
-						</div>
-
-						{error && (
-							<div className="mt-3 px-3 py-2.5 rounded-lg text-[13px] bg-sidebar text-red-600">
-								{error}
-							</div>
-						)}
-						{success && (
-							<div className="mt-3 px-3 py-2.5 rounded-lg text-[13px] bg-sidebar text-green-600">
-								{success}
-							</div>
-						)}
-					</section>
 				</main>
 			)}
 		</div>
