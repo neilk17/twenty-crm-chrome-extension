@@ -1,6 +1,11 @@
 import { TwentyApiClient, extractTokenFromCookie } from '../lib/twenty-api';
 import { getSettings, saveSettings, addToRecentCaptures, getRecentCaptures } from '../lib/storage';
 import { getNormalizedDomain } from '../lib/domain-extractor';
+import {
+  getTwentyCookieUrls,
+  normalizeTwentyUrl,
+  resolveTwentyApiBaseUrl,
+} from '../lib/twenty-url';
 import type { ExtensionMessage, ExtensionResponse, LinkedInProfileData, LinkedInCompanyData, DomainCompanyData } from '../types';
 
 // Cache for API client
@@ -9,63 +14,6 @@ let cachedTwentyUrl: string | null = null;
 let cachedAuthToken: { apiBaseUrl: string; token: string; checkedAt: number } | null = null;
 
 const AUTH_TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
-
-function parseTwentyUrl(twentyUrl: string): URL | null {
-  const normalized = twentyUrl.trim();
-  if (!normalized) return null;
-
-  const withProtocol = /^https?:\/\//i.test(normalized)
-    ? normalized
-    : `https://${normalized}`;
-
-  try {
-    return new URL(withProtocol);
-  } catch {
-    return null;
-  }
-}
-
-function isOfficialTwentyCloudHost(hostname: string): boolean {
-  return hostname === 'twenty.com'
-    || hostname === 'www.twenty.com'
-    || hostname === 'app.twenty.com'
-    || hostname === 'api.twenty.com';
-}
-
-function normalizeTwentyUrlForStorage(twentyUrl: string): string {
-  const parsed = parseTwentyUrl(twentyUrl);
-  if (!parsed) {
-    return twentyUrl.trim().replace(/\/$/, '');
-  }
-
-  const normalizedHost = parsed.hostname.toLowerCase();
-  if (normalizedHost === 'twenty.com' || normalizedHost === 'www.twenty.com') {
-    return `${parsed.protocol}//app.twenty.com`;
-  }
-
-  const normalizedPath = parsed.pathname && parsed.pathname !== '/'
-    ? parsed.pathname.replace(/\/$/, '')
-    : '';
-  return `${parsed.protocol}//${parsed.hostname}${normalizedPath}`;
-}
-
-function resolveTwentyApiBaseUrl(twentyUrl: string): string {
-  const parsed = parseTwentyUrl(twentyUrl);
-  if (!parsed) {
-    return twentyUrl.trim().replace(/\/$/, '');
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-
-  if (isOfficialTwentyCloudHost(hostname)) {
-    return `${parsed.protocol}//api.twenty.com`;
-  }
-
-  const normalizedPath = parsed.pathname && parsed.pathname !== '/'
-    ? parsed.pathname.replace(/\/$/, '')
-    : '';
-  return `${parsed.origin}${normalizedPath}`;
-}
 
 function isAuthGraphQLError(message: string): boolean {
   const normalized = message.toLowerCase();
@@ -144,6 +92,9 @@ async function getApiClient(): Promise<TwentyApiClient> {
   }
 
   const apiBaseUrl = resolveTwentyApiBaseUrl(settings.twentyUrl);
+  if (!apiBaseUrl) {
+    throw new Error('Invalid Twenty URL. Enter your full Twenty workspace URL.');
+  }
 
   // Create new client if URL changed
   if (cachedTwentyUrl !== apiBaseUrl || !apiClient) {
@@ -161,37 +112,13 @@ async function getApiClient(): Promise<TwentyApiClient> {
   return apiClient;
 }
 
-function getTwentyCookieUrls(twentyUrl: string): string[] {
-  const parsed = parseTwentyUrl(twentyUrl);
-  if (!parsed) {
-    const normalized = twentyUrl.trim().replace(/\/$/, '');
-    return normalized ? [normalized] : [];
-  }
-
-  const protocol = parsed.protocol;
-  const hostname = parsed.hostname.toLowerCase();
-  const hostnames = new Set<string>([hostname]);
-
-  if (hostname.startsWith('www.')) {
-    hostnames.add(hostname.replace(/^www\./, ''));
-  } else {
-    hostnames.add(`www.${hostname}`);
-  }
-
-  if (isOfficialTwentyCloudHost(hostname)) {
-    hostnames.add('twenty.com');
-    hostnames.add('www.twenty.com');
-    hostnames.add('app.twenty.com');
-    hostnames.add('api.twenty.com');
-  }
-
-  return Array.from(hostnames).map((host) => `${protocol}//${host}`);
-}
-
 // Get auth token from Twenty's cookie
 async function getAuthToken(twentyUrl: string): Promise<string | null> {
   try {
     const apiBaseUrl = resolveTwentyApiBaseUrl(twentyUrl);
+    if (!apiBaseUrl) {
+      throw new Error('Invalid Twenty URL. Enter your full Twenty workspace URL.');
+    }
     const cookieUrls = getTwentyCookieUrls(twentyUrl);
     const cookieNames = ['tokenPair', 'accessToken', 'access-token'];
     const tokenCandidates: string[] = [];
@@ -462,6 +389,12 @@ async function testConnection(): Promise<{ connected: boolean; error?: string }>
     if (errorMessage.includes('not configured')) {
       return { connected: false, error: 'Twenty URL is not configured. Please enter your Twenty URL.' };
     }
+    if (errorMessage.includes('Invalid Twenty URL')) {
+      return {
+        connected: false,
+        error: 'Enter a valid Twenty URL, for example https://app.twenty.com or https://crm.example.com.',
+      };
+    }
     if (errorMessage.includes('No authentication token') || errorMessage.includes('No authentication')) {
       return { connected: false, error: 'Not logged in. Please open your Twenty instance and log in, then try again.' };
     }
@@ -514,25 +447,42 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
       case 'GET_SETTINGS': {
         const settings = await getSettings();
         const normalizedTwentyUrl = settings.twentyUrl
-          ? normalizeTwentyUrlForStorage(settings.twentyUrl)
-          : settings.twentyUrl;
-        const hasToken = settings.twentyUrl
-          ? !!(await getAuthToken(settings.twentyUrl))
+          ? normalizeTwentyUrl(settings.twentyUrl)
+          : null;
+        const invalidTwentyUrl = settings.twentyUrl && !normalizedTwentyUrl
+          ? settings.twentyUrl
+          : '';
+        const hasToken = normalizedTwentyUrl
+          ? !!(await getAuthToken(normalizedTwentyUrl))
           : false;
         return {
           success: true,
-          data: { ...settings, twentyUrl: normalizedTwentyUrl, hasToken }
+          data: {
+            ...settings,
+            twentyUrl: normalizedTwentyUrl || '',
+            invalidTwentyUrl,
+            hasToken,
+          }
         };
       }
 
       case 'SAVE_SETTINGS': {
         const newSettings = message.payload as { twentyUrl?: string };
-        const normalizedSettings = {
-          ...newSettings,
-          twentyUrl: newSettings.twentyUrl
-            ? normalizeTwentyUrlForStorage(newSettings.twentyUrl)
-            : newSettings.twentyUrl,
-        };
+        const validatedTwentyUrl = newSettings.twentyUrl
+          ? normalizeTwentyUrl(newSettings.twentyUrl)
+          : newSettings.twentyUrl;
+        if (newSettings.twentyUrl && !validatedTwentyUrl) {
+          return {
+            success: false,
+            error: 'Enter a valid Twenty URL, for example https://app.twenty.com or https://crm.example.com.'
+          };
+        }
+        const normalizedSettings = newSettings.twentyUrl
+          ? {
+              ...newSettings,
+              twentyUrl: validatedTwentyUrl as string,
+            }
+          : newSettings;
         console.log('Saving settings:', normalizedSettings);
         await saveSettings(normalizedSettings);
         // Clear cached client when URL changes

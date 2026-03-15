@@ -25,6 +25,10 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getLinkedInPageType } from "../../lib/linkedin-scraper";
+import {
+	getTwentyOriginPatterns,
+	normalizeTwentyUrl,
+} from "../../lib/twenty-url";
 import type {
 	CaptureState,
 	ExtensionResponse,
@@ -75,24 +79,17 @@ function isConfiguredTwentyTab(url: string, twentyUrl: string): boolean {
 	}
 }
 
-function maskTwentyUrl(url: string): string {
-	if (!url) return "";
-
+function isLinkedInHost(url: string): boolean {
 	try {
-		const parsed = new URL(url);
-		const hostname = parsed.hostname;
-		if (hostname.length <= 4) {
-			return `${parsed.protocol}//${"*".repeat(hostname.length)}`;
-		}
-
-		const visibleStart = hostname.slice(0, 2);
-		const visibleEnd = hostname.slice(-2);
-		const maskedMiddle = "•".repeat(Math.max(hostname.length - 4, 4));
-
-		return `${parsed.protocol}//${visibleStart}${maskedMiddle}${visibleEnd}`;
+		const hostname = new URL(url).hostname.toLowerCase();
+		return hostname === "linkedin.com" || hostname.endsWith(".linkedin.com");
 	} catch {
-		return "Saved";
+		return false;
 	}
+}
+
+function isIgnoredCompanyDomain(domain: string): boolean {
+	return domain === "linkedin.com";
 }
 
 export default function App() {
@@ -104,6 +101,7 @@ export default function App() {
 	const [isSaving, setIsSaving] = useState(false);
 	const [isTesting, setIsTesting] = useState(false);
 	const [isEditingTwentyUrl, setIsEditingTwentyUrl] = useState(false);
+	const [isSetupCardCollapsed, setIsSetupCardCollapsed] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [success, setSuccess] = useState<string | null>(null);
 	const [recentCaptures, setRecentCaptures] = useState<RecentCapture[]>([]);
@@ -112,20 +110,23 @@ export default function App() {
 	});
 	const [autoFetchAttempts, setAutoFetchAttempts] = useState(0);
 
-	console.log("captureState", captureState);
 	const [currentTabUrl, setCurrentTabUrl] = useState<string | null>(null);
 	const [isCheckingPage, setIsCheckingPage] = useState(false);
 
 	// Computed
 	const isConfigured = useMemo(() => !!savedTwentyUrl, [savedTwentyUrl]);
-	const maskedTwentyUrl = useMemo(
-		() => maskTwentyUrl(savedTwentyUrl),
-		[savedTwentyUrl],
-	);
+	const extensionVersion = useMemo(() => {
+		const manifest = browser.runtime.getManifest();
+		return manifest.version_name || manifest.version;
+	}, []);
 	const isOnTwentyWorkspace = useMemo(
 		() =>
 			currentTabUrl ? isConfiguredTwentyTab(currentTabUrl, savedTwentyUrl) : false,
 		[currentTabUrl, savedTwentyUrl],
+	);
+	const canCollapseSetupCard = useMemo(
+		() => isConfigured && hasToken && isConnected && !isEditingTwentyUrl,
+		[hasToken, isConfigured, isConnected, isEditingTwentyUrl],
 	);
 
 	const connectionStatus = useMemo(() => {
@@ -176,59 +177,6 @@ export default function App() {
 		],
 		[hasToken, isConfigured, isConnected],
 	);
-
-	function normalizeTwentyUrl(urlValue: string): string {
-		let url = urlValue.trim();
-		if (!url.startsWith("http://") && !url.startsWith("https://")) {
-			url = `https://${url}`;
-		}
-
-		try {
-			const parsed = new URL(url);
-			const hostname = parsed.hostname.toLowerCase();
-			if (hostname === "twenty.com" || hostname === "www.twenty.com") {
-				return `${parsed.protocol}//app.twenty.com`;
-			}
-			const normalizedPath =
-				parsed.pathname && parsed.pathname !== "/"
-					? parsed.pathname.replace(/\/$/, "")
-					: "";
-			return `${parsed.origin}${normalizedPath}`;
-		} catch {
-			return url.replace(/\/$/, "");
-		}
-	}
-
-	function getTwentyOriginPatterns(urlValue: string): string[] {
-		try {
-			const parsed = new URL(urlValue);
-			const protocol = parsed.protocol;
-			const hostname = parsed.hostname.toLowerCase();
-			const hostnames = new Set<string>([hostname]);
-			if (hostname.startsWith("www.")) {
-				hostnames.add(hostname.replace(/^www\./, ""));
-			} else {
-				hostnames.add(`www.${hostname}`);
-			}
-
-			if (
-				hostname === "twenty.com" ||
-				hostname === "www.twenty.com" ||
-				hostname === "app.twenty.com" ||
-				hostname === "api.twenty.com"
-			) {
-				hostnames.add("twenty.com");
-				hostnames.add("www.twenty.com");
-				hostnames.add("app.twenty.com");
-				hostnames.add("api.twenty.com");
-			}
-			return Array.from(hostnames).map(
-				(hostname) => `${protocol}//${hostname}/*`,
-			);
-		} catch {
-			return [];
-		}
-	}
 
 	async function ensureTwentyPermission(urlValue: string): Promise<boolean> {
 		const origins = getTwentyOriginPatterns(urlValue);
@@ -287,6 +235,15 @@ export default function App() {
 		}
 	}, [savedTwentyUrl, hasToken]);
 
+	useEffect(() => {
+		if (canCollapseSetupCard) {
+			setIsSetupCardCollapsed(true);
+			return;
+		}
+
+		setIsSetupCardCollapsed(false);
+	}, [canCollapseSetupCard]);
+
 	// Reset auto-fetch attempts whenever the active URL changes.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: currentTabUrl is the trigger for reset
 	useEffect(() => {
@@ -323,13 +280,13 @@ export default function App() {
 
 			if (activeTab?.url) {
 				const url = activeTab.url;
-				console.log("Current tab URL:", url);
 				setCurrentTabUrl(url);
 				const pageType = getLinkedInPageType(url);
-				console.log("Page type:", pageType);
 				if (pageType && activeTab.id) {
 					// LinkedIn page - use existing flow
 					await checkPageForCapture(activeTab.id, url, pageType);
+				} else if (isLinkedInHost(url)) {
+					setCaptureState({ status: "idle" });
 				} else if (activeTab.id) {
 					// Non-LinkedIn page - check for domain-based company
 					await checkDomainForCapture(activeTab.id, url);
@@ -502,6 +459,10 @@ export default function App() {
 			}
 
 			const domain = domainResponse.data.domain;
+			if (isIgnoredCompanyDomain(domain)) {
+				setCaptureState({ status: "idle" });
+				return;
+			}
 
 			// Check for duplicate by domain
 			const duplicateResponse = (await browser.runtime.sendMessage({
@@ -721,19 +682,24 @@ export default function App() {
 	}
 
 	function getCaptureButtonText(): string {
+		const isDomainCapture =
+			!!captureState.data &&
+			captureState.data.type === "company" &&
+			"domain" in captureState.data;
+
 		switch (captureState.status) {
 			case "idle":
-				return "Checking profile...";
+				return isDomainCapture ? "Check website" : "Checking profile...";
 			case "loading":
-				return "Checking...";
+				return isDomainCapture ? "Checking company..." : "Checking...";
 			case "ready":
-				return "Add to Twenty CRM";
+				return isDomainCapture ? "Add company" : "Add to Twenty CRM";
 			case "exists":
 				return "Open in Twenty";
 			case "saving":
-				return "Saving...";
+				return isDomainCapture ? "Adding company..." : "Saving...";
 			case "saved":
-				return "Saved!";
+				return isDomainCapture ? "Company added" : "Saved!";
 			case "error":
 				return captureState.error || "Error";
 			default:
@@ -746,18 +712,27 @@ export default function App() {
 		try {
 			const response = (await browser.runtime.sendMessage({
 				type: "GET_SETTINGS",
-			})) as ExtensionResponse<{ twentyUrl: string; hasToken: boolean }>;
+			})) as ExtensionResponse<{
+				twentyUrl: string;
+				hasToken: boolean;
+				invalidTwentyUrl?: string;
+			}>;
 
 			if (response.success && response.data) {
-				const normalizedTwentyUrl = normalizeTwentyUrl(
-					response.data.twentyUrl || "",
-				);
+				const normalizedTwentyUrl = response.data.twentyUrl || "";
+				const invalidTwentyUrl = response.data.invalidTwentyUrl || "";
 				setSavedTwentyUrl(normalizedTwentyUrl);
-				setTwentyUrlInput(normalizedTwentyUrl);
+				setTwentyUrlInput(invalidTwentyUrl || normalizedTwentyUrl);
 				setIsEditingTwentyUrl(!normalizedTwentyUrl);
-				setHasToken(response.data.hasToken || false);
+				setHasToken(invalidTwentyUrl ? false : (response.data.hasToken || false));
+				setError(
+					invalidTwentyUrl
+						? "Saved Twenty URL is invalid. Enter your full workspace URL again."
+						: null,
+				);
+				setSuccess(null);
 
-				if (response.data.hasToken) {
+				if (normalizedTwentyUrl && response.data.hasToken && !invalidTwentyUrl) {
 					await testConnection(normalizedTwentyUrl, { showSuccess: false });
 				} else {
 					setIsConnected(false);
@@ -792,6 +767,12 @@ export default function App() {
 		}
 
 		const url = normalizeTwentyUrl(twentyUrlInput);
+		if (!url) {
+			setError(
+				"Enter a valid Twenty URL, for example https://app.twenty.com or https://crm.example.com.",
+			);
+			return;
+		}
 		setTwentyUrlInput(url);
 
 		setIsSaving(true);
@@ -839,7 +820,9 @@ export default function App() {
 	) {
 		const targetUrl = normalizeTwentyUrl(urlOverride || savedTwentyUrl);
 		if (!targetUrl) {
-			setError("Please enter your Twenty URL");
+			setError(
+				"Enter a valid Twenty URL, for example https://app.twenty.com or https://crm.example.com.",
+			);
 			return;
 		}
 
@@ -929,15 +912,35 @@ export default function App() {
 	}
 
 	return (
-		<div className="w-full max-w-[500px] min-h-screen font-sans bg-card/10">
+		<div className="flex min-h-full w-full max-w-[500px] flex-col font-sans bg-card/10">
 			{isLoading ? (
 				<div className="flex flex-col items-center justify-center py-[60px] px-5 gap-3 ">
 					<div className="w-6 h-6 border-2 rounded-full animate-spin"></div>
 					<span>Loading...</span>
 				</div>
 			) : (
-				<main className="mx-4 pb-5 mt-4">
+				<main className="mx-4 mt-4 flex flex-1 flex-col pb-4">
 					<section className="mb-5">
+						{canCollapseSetupCard && isSetupCardCollapsed ? (
+							<button
+								type="button"
+								className="flex w-full items-center justify-between rounded-xl border bg-card px-4 py-3 text-left shadow-sm transition-colors hover:bg-accent/20"
+								onClick={() => setIsSetupCardCollapsed(false)}
+							>
+								<div className="flex min-w-0 items-center gap-3">
+									<Avatar className="size-10">
+										<AvatarFallback>20</AvatarFallback>
+									</Avatar>
+									<div className="flex min-w-0 flex-col gap-1">
+										<p className="text-sm font-semibold">Twenty connected</p>
+										<p className="truncate text-xs text-muted-foreground">
+											{savedTwentyUrl}
+										</p>
+									</div>
+								</div>
+								<Badge variant="secondary">Connected</Badge>
+							</button>
+						) : (
 						<Card>
 							<CardHeader>
 								<div className="flex flex-col gap-2">
@@ -955,7 +958,18 @@ export default function App() {
 									</CardDescription>
 								</div>
 								<CardAction>
-									<Badge variant="secondary">{statusText}</Badge>
+									<div className="flex items-center gap-2">
+										<Badge variant="secondary">{statusText}</Badge>
+										{canCollapseSetupCard && (
+											<Button
+												variant="ghost"
+												size="sm"
+												onClick={() => setIsSetupCardCollapsed(true)}
+											>
+												Hide
+											</Button>
+										)}
+									</div>
 								</CardAction>
 							</CardHeader>
 							<CardContent className="flex flex-col gap-4">
@@ -981,7 +995,7 @@ export default function App() {
 											<p className="text-xs font-medium text-muted-foreground">
 												Saved Twenty URL
 											</p>
-											<p className="font-mono text-sm">{maskedTwentyUrl}</p>
+											<p className="break-all font-mono text-sm">{savedTwentyUrl}</p>
 										</div>
 										<p className="text-xs text-muted-foreground">
 											Your CRM host is excluded from website company capture, so
@@ -1023,12 +1037,12 @@ export default function App() {
 								)}
 
 								{error && (
-									<div className="rounded-lg bg-sidebar px-3 py-2.5 text-[13px] text-red-600">
+									<div role="alert" className="rounded-lg bg-status-error-bg px-3 py-2.5 text-xs text-status-error">
 										{error}
 									</div>
 								)}
 								{success && (
-									<div className="rounded-lg bg-sidebar px-3 py-2.5 text-[13px] text-green-600">
+									<div role="status" aria-live="polite" className="rounded-lg bg-status-success-bg px-3 py-2.5 text-xs text-status-success">
 										{success}
 									</div>
 								)}
@@ -1093,31 +1107,12 @@ export default function App() {
 								)}
 							</CardFooter>
 						</Card>
+						)}
 					</section>
 
-					{isConfigured && hasToken && (
+					{isConfigured && hasToken && !isOnTwentyWorkspace && (
 						<section className="mb-5">
-							{isOnTwentyWorkspace ? (
-								<div className="bg-card rounded-lg border p-4">
-									<div className="mb-2 flex items-center gap-2">
-										<h3 className="text-sm font-semibold">
-											You&apos;re on your Twenty workspace
-										</h3>
-									</div>
-									<p className="mb-3 text-xs text-muted-foreground">
-										Company capture is disabled on your saved Twenty URL so the
-										extension does not try to add your CRM as a company.
-									</p>
-									<Button
-										onClick={checkCurrentTab}
-										className="w-full"
-										variant="outline"
-										size="sm"
-									>
-										Check active page
-									</Button>
-								</div>
-							) : currentTabUrl && getLinkedInPageType(currentTabUrl) ? (
+							{currentTabUrl && getLinkedInPageType(currentTabUrl) ? (
 								<div className="bg-card rounded-lg p-4 border ">
 									{captureState.data && (
 										<div className="mb-3 flex flex-col gap-2">
@@ -1127,11 +1122,11 @@ export default function App() {
 														<User className="size-4" />
 													</AvatarFallback>
 												</Avatar>
-												<h1 className="font-semibold text-xl">
+												<h3 className="font-semibold text-xl">
 													{captureState.data.type === "person"
 														? `${captureState.data.firstName} ${captureState.data.lastName}`
 														: captureState.data.name}
-												</h1>
+												</h3>
 											</div>
 											<div>
 												<p className="text-sm text-muted-foreground">
@@ -1206,9 +1201,9 @@ export default function App() {
 															<Building2 className="size-4" />
 														</AvatarFallback>
 													</Avatar>
-													<h1 className="font-semibold text-xl">
+													<h3 className="font-semibold text-xl">
 														{(captureState.data as DomainCompanyData).domain}
-													</h1>
+													</h3>
 												</div>
 												<div>
 													<p className="text-sm text-muted-foreground">
@@ -1263,7 +1258,6 @@ export default function App() {
 												className="w-full"
 												variant="outline"
 												size="sm"
-												title="Check for Company Domain"
 											>
 												Check for Company Domain
 											</Button>
@@ -1276,7 +1270,7 @@ export default function App() {
 
 					{recentCaptures.length > 0 && (
 						<section className="mb-5">
-							<Label className="text-sm font-medium">Recently Added</Label>
+							<p className="text-sm font-medium">Recently Added</p>
 							<ul className="list-none p-0 mt-2">
 								{recentCaptures.map((capture) => (
 									<li key={capture.twentyId} className="mb-2 list-none">
@@ -1285,21 +1279,15 @@ export default function App() {
 											className="flex w-full items-center gap-3 px-3 py-2.5 bg-sidebar rounded-lg cursor-pointer transition-colors hover:bg-sidebar/80 text-left"
 											onClick={() => openRecord(capture)}
 										>
-											<div className="flex items-center justify-center w-8 h-8 bg-red-200 rounded-full ">
-												{capture.type === "person" ? (
-													<Avatar>
-														<AvatarFallback>
-															<User className="size-4" />
-														</AvatarFallback>
-													</Avatar>
-												) : (
-													<Avatar>
-														<AvatarFallback>
-															<Building2 className="size-4" />
-														</AvatarFallback>
-													</Avatar>
-												)}
-											</div>
+											<Avatar className="size-8 shrink-0">
+												<AvatarFallback>
+													{capture.type === "person" ? (
+														<User className="size-4" />
+													) : (
+														<Building2 className="size-4" />
+													)}
+												</AvatarFallback>
+											</Avatar>
 											<div className="flex-1 min-w-0">
 												<span className="block text-sm font-medium whitespace-nowrap overflow-hidden text-ellipsis">
 													{capture.name}
@@ -1315,6 +1303,10 @@ export default function App() {
 							</ul>
 						</section>
 					)}
+
+					<footer className="mt-auto pt-4 text-center text-[11px] text-muted-foreground">
+						Version {extensionVersion}
+					</footer>
 				</main>
 			)}
 		</div>
