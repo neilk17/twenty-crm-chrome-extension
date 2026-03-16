@@ -1,4 +1,8 @@
-import { TwentyApiClient, extractTokenFromCookie } from '../lib/twenty-api';
+import {
+  TwentyApiClient,
+  extractTokenFromCookie,
+  isTwentyAuthErrorMessage,
+} from '../lib/twenty-api';
 import { getSettings, saveSettings, addToRecentCaptures, getRecentCaptures } from '../lib/storage';
 import { getNormalizedDomain } from '../lib/domain-extractor';
 import {
@@ -15,43 +19,74 @@ let cachedAuthToken: { apiBaseUrl: string; token: string; checkedAt: number } | 
 
 const AUTH_TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
 
-function isAuthGraphQLError(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return normalized.includes('unauthorized')
-    || normalized.includes('authentication')
-    || normalized.includes('forbidden')
-    || normalized.includes('invalid token')
-    || normalized.includes('jwt')
-    || normalized.includes('access denied');
+type TokenValidationResult = 'valid' | 'invalid' | 'inconclusive';
+
+function isTokenExpired(token: string): boolean {
+  try {
+    const [, payload] = token.split('.');
+    if (!payload) {
+      return false;
+    }
+
+    const padded = payload.replace(/-/g, '+').replace(/_/g, '/')
+      .padEnd(Math.ceil(payload.length / 4) * 4, '=');
+    const decoded = atob(padded);
+    const parsed = JSON.parse(decoded) as { exp?: unknown };
+
+    if (typeof parsed.exp !== 'number') {
+      return false;
+    }
+
+    return (parsed.exp * 1000) <= (Date.now() + 30 * 1000);
+  } catch {
+    return false;
+  }
 }
 
-async function validateTokenForApi(apiBaseUrl: string, token: string): Promise<boolean> {
+function isAuthError(error: unknown): boolean {
+  return error instanceof Error && isTwentyAuthErrorMessage(error.message);
+}
+
+async function validateTokenForApi(apiBaseUrl: string, token: string): Promise<TokenValidationResult> {
   const probes = [
     `query { currentUser { id } }`,
     `query { currentWorkspace { id } }`,
     `query { people(first: 1) { edges { node { id } } } }`,
   ];
 
+  let sawInconclusiveProbe = false;
+
+  const performRequest = async (bearerToken: string | null, query: string): Promise<Response> =>
+    fetch(`${apiBaseUrl}/graphql`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
+      },
+      credentials: 'include',
+      body: JSON.stringify({ query }),
+    });
+
   for (const query of probes) {
     let response: Response;
     try {
-      response = await fetch(`${apiBaseUrl}/graphql`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ query }),
-      });
+      response = await performRequest(token, query);
+
+      // Mirror the request path used by the API client: some deployments rely on cookie auth.
+      if (response.status === 401 || response.status === 403) {
+        response = await performRequest(null, query);
+      }
     } catch {
-      return false;
+      sawInconclusiveProbe = true;
+      continue;
     }
 
     if (response.status === 401 || response.status === 403) {
-      return false;
+      return 'invalid';
     }
 
     if (!response.ok) {
+      sawInconclusiveProbe = true;
       continue;
     }
 
@@ -59,12 +94,13 @@ async function validateTokenForApi(apiBaseUrl: string, token: string): Promise<b
     try {
       result = await response.json();
     } catch {
+      sawInconclusiveProbe = true;
       continue;
     }
 
     const errors = (result as { errors?: Array<{ message?: string }> })?.errors || [];
     if (!errors.length) {
-      return true;
+      return 'valid';
     }
 
     const errorText = errors
@@ -72,15 +108,15 @@ async function validateTokenForApi(apiBaseUrl: string, token: string): Promise<b
       .filter(Boolean)
       .join(' | ');
 
-    if (isAuthGraphQLError(errorText)) {
-      return false;
+    if (isTwentyAuthErrorMessage(errorText)) {
+      return 'invalid';
     }
 
     // Non-auth GraphQL errors still prove the token is accepted.
-    return true;
+    return 'valid';
   }
 
-  return false;
+  return sawInconclusiveProbe ? 'inconclusive' : 'invalid';
 }
 
 // Get or create API client
@@ -168,14 +204,16 @@ async function getAuthToken(twentyUrl: string): Promise<string | null> {
       cachedAuthToken
       && cachedAuthToken.apiBaseUrl === apiBaseUrl
       && (Date.now() - cachedAuthToken.checkedAt) < AUTH_TOKEN_CACHE_TTL_MS
+      && !isTokenExpired(cachedAuthToken.token)
       && tokenCandidates.includes(cachedAuthToken.token)
     ) {
       return cachedAuthToken.token;
     }
 
+    let sawInconclusiveValidation = false;
     for (const candidateToken of tokenCandidates) {
-      const valid = await validateTokenForApi(apiBaseUrl, candidateToken);
-      if (valid) {
+      const validationResult = await validateTokenForApi(apiBaseUrl, candidateToken);
+      if (validationResult === 'valid') {
         cachedAuthToken = {
           apiBaseUrl,
           token: candidateToken,
@@ -184,10 +222,19 @@ async function getAuthToken(twentyUrl: string): Promise<string | null> {
         console.log('Validated auth token candidate for', apiBaseUrl);
         return candidateToken;
       }
+
+      if (validationResult === 'inconclusive') {
+        sawInconclusiveValidation = true;
+      }
     }
 
-    console.warn('Could not validate token candidates; using first extracted token as fallback.');
-    return tokenCandidates[0];
+    cachedAuthToken = null;
+    if (sawInconclusiveValidation) {
+      console.warn('Could not validate token candidates conclusively; using first extracted token as fallback.');
+      return tokenCandidates[0];
+    }
+
+    return null;
   } catch (error) {
     console.error('Error getting auth token:', error);
     return null;
@@ -209,7 +256,10 @@ async function checkPersonDuplicate(
       return { exists: true, record: { id: personByLinkedIn.id, type: 'person' }, matchedBy: 'linkedin' };
     }
   } catch (error) {
-    console.error('Error searching by LinkedIn URL:', error);
+    if (isAuthError(error)) {
+      throw error;
+    }
+    console.warn('Lookup by LinkedIn URL failed:', error);
   }
 
   // If not found by LinkedIn URL and we have name, try by name
@@ -221,7 +271,10 @@ async function checkPersonDuplicate(
         return { exists: true, record: { id: personByName.id, type: 'person' }, matchedBy: 'name' };
       }
     } catch (error) {
-      console.error('Error searching by name:', error);
+      if (isAuthError(error)) {
+        throw error;
+      }
+      console.warn('Lookup by person name failed:', error);
     }
   }
 
@@ -244,7 +297,10 @@ async function checkCompanyDuplicate(
         return { exists: true, record: { id: companyByLinkedIn.id, type: 'company' }, matchedBy: 'linkedin' };
       }
     } catch (error) {
-      console.error('Error searching company by LinkedIn URL:', error);
+      if (isAuthError(error)) {
+        throw error;
+      }
+      console.warn('Lookup by company LinkedIn URL failed:', error);
     }
   }
 
@@ -257,7 +313,10 @@ async function checkCompanyDuplicate(
         return { exists: true, record: { id: companyByDomain.id, type: 'company' }, matchedBy: 'domain' };
       }
     } catch (error) {
-      console.error('Error searching company by domain:', error);
+      if (isAuthError(error)) {
+        throw error;
+      }
+      console.warn('Lookup by company domain failed:', error);
     }
   }
 
@@ -270,7 +329,10 @@ async function checkCompanyDuplicate(
         return { exists: true, record: { id: companyByName.id, type: 'company' }, matchedBy: 'name' };
       }
     } catch (error) {
-      console.error('Error searching company by name:', error);
+      if (isAuthError(error)) {
+        throw error;
+      }
+      console.warn('Lookup by company name failed:', error);
     }
   }
 
@@ -382,8 +444,12 @@ async function testConnection(): Promise<{ connected: boolean; error?: string }>
     }
     return { connected: true };
   } catch (err) {
-    console.error('Test connection failed:', err);
     const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+    if (isTwentyAuthErrorMessage(errorMessage) || errorMessage.includes('No authentication token')) {
+      console.info('Test connection requires an active Twenty session.');
+    } else {
+      console.error('Test connection failed:', err);
+    }
 
     // Provide more specific error messages
     if (errorMessage.includes('not configured')) {
@@ -613,7 +679,8 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     const isExpectedSetupState = errorMessage.includes('Twenty URL not configured')
-      || errorMessage.includes('No authentication token');
+      || errorMessage.includes('No authentication token')
+      || isTwentyAuthErrorMessage(errorMessage);
 
     if (!isExpectedSetupState) {
       console.error('Background error:', error);

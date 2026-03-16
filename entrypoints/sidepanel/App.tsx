@@ -24,6 +24,7 @@ import {
 	User,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { getNormalizedDomain } from "../../lib/domain-extractor";
 import { getLinkedInPageType } from "../../lib/linkedin-scraper";
 import {
 	getTwentyOriginPatterns,
@@ -90,6 +91,19 @@ function isLinkedInHost(url: string): boolean {
 
 function isIgnoredCompanyDomain(domain: string): boolean {
 	return domain === "linkedin.com";
+}
+
+function isAuthStateError(message?: string | null): boolean {
+	if (!message) return false;
+
+	const normalized = message.toLowerCase();
+	return (
+		normalized.includes("authentication") ||
+		normalized.includes("token") ||
+		normalized.includes("expired") ||
+		normalized.includes("session") ||
+		normalized.includes("not logged in")
+	);
 }
 
 export default function App() {
@@ -177,6 +191,17 @@ export default function App() {
 		],
 		[hasToken, isConfigured, isConnected],
 	);
+
+	function handleSessionExpired(message?: string | null) {
+		console.info("Twenty session is no longer active:", message);
+		setHasToken(false);
+		setIsConnected(false);
+		setCaptureState({ status: "idle" });
+		setSuccess(null);
+		setError(
+			"Your Twenty session expired. Open Twenty, sign in again, then click \"I've signed in\".",
+		);
+	}
 
 	async function ensureTwentyPermission(urlValue: string): Promise<boolean> {
 		const origins = getTwentyOriginPatterns(urlValue);
@@ -282,20 +307,18 @@ export default function App() {
 				const url = activeTab.url;
 				setCurrentTabUrl(url);
 				const pageType = getLinkedInPageType(url);
-				if (pageType && activeTab.id) {
-					// LinkedIn page - use existing flow
-					await checkPageForCapture(activeTab.id, url, pageType);
-				} else if (isLinkedInHost(url)) {
-					setCaptureState({ status: "idle" });
-				} else if (activeTab.id) {
-					// Non-LinkedIn page - check for domain-based company
-					await checkDomainForCapture(activeTab.id, url);
+					if (pageType && activeTab.id) {
+						// LinkedIn page - use existing flow
+						await checkPageForCapture(activeTab.id, url, pageType);
+					} else if (isLinkedInHost(url)) {
+						setCaptureState({ status: "idle" });
+					} else {
+						// Non-LinkedIn page - check for domain-based company
+						await checkDomainForCapture(url);
+					}
 				} else {
-					setCaptureState({ status: "idle" });
-				}
-			} else {
-				console.log("No active tab found");
-				setCurrentTabUrl(null);
+					console.log("No active tab found");
+					setCurrentTabUrl(null);
 				setCaptureState({ status: "idle" });
 			}
 		} catch (err) {
@@ -318,12 +341,9 @@ export default function App() {
 			}
 		};
 
-		pushTabs(
-			await browser.tabs.query({
-				active: true,
-				lastFocusedWindow: true,
-			}),
-		);
+		const pushActiveTabs = (tabs?: BrowserTab[]) => {
+			pushTabs((tabs || []).filter((tab) => tab.active));
+		};
 
 		pushTabs(
 			await browser.tabs.query({
@@ -333,30 +353,43 @@ export default function App() {
 		);
 
 		try {
-			const lastFocusedWindow = await browser.windows.getLastFocused({
+			const currentWindow = await browser.windows.getCurrent({
 				populate: true,
 			});
-			pushTabs(lastFocusedWindow.tabs);
+			pushActiveTabs(currentWindow.tabs);
 		} catch (error) {
-			console.warn("Could not inspect last focused window:", error);
+			console.warn("Could not inspect current window:", error);
 		}
 
 		pushTabs(
 			await browser.tabs.query({
 				active: true,
+				lastFocusedWindow: true,
 			}),
 		);
+
+		try {
+			const lastFocusedWindow = await browser.windows.getLastFocused({
+				populate: true,
+			});
+			pushActiveTabs(lastFocusedWindow.tabs);
+		} catch (error) {
+			console.warn("Could not inspect last focused window:", error);
+		}
+
+		if (candidates.length === 0) {
+			pushTabs(
+				await browser.tabs.query({
+					active: true,
+				}),
+			);
+		}
 
 		if (candidates.length === 0) {
 			return null;
 		}
 
-		return (
-			candidates.find(
-				(tab) => !isConfiguredTwentyTab(tab.url || "", savedTwentyUrl),
-			) ||
-			candidates[0]
-		);
+		return candidates[0];
 	}
 
 	async function checkPageForCapture(
@@ -420,11 +453,10 @@ export default function App() {
 					});
 				}
 			} else {
-				if (
-					response.error?.includes("not configured") ||
-					response.error?.includes("No authentication")
-				) {
+				if (response.error?.includes("not configured")) {
 					setCaptureState({ status: "idle", error: "Configure Twenty URL" });
+				} else if (isAuthStateError(response.error)) {
+					handleSessionExpired(response.error);
 				} else {
 					setCaptureState({ status: "error", error: response.error });
 				}
@@ -437,28 +469,24 @@ export default function App() {
 		}
 	}
 
-	async function checkDomainForCapture(tabId: number, _url: string) {
+	async function checkDomainForCapture(url: string) {
 		setIsCheckingPage(true);
+		setError(null);
 		setCaptureState({ status: "loading" });
 
 		try {
-			// Get domain from page
-			const domainResponse = (await browser.runtime.sendMessage({
-				type: "GET_DOMAIN_FROM_PAGE",
-				payload: { tabId },
-			})) as ExtensionResponse<{ domain: string; url: string }>;
-
-			if (!domainResponse.success || !domainResponse.data?.domain) {
+			if (isConfiguredTwentyTab(url, savedTwentyUrl)) {
 				setCaptureState({ status: "idle" });
 				return;
 			}
 
-			if (isConfiguredTwentyTab(domainResponse.data.url, savedTwentyUrl)) {
+			const domain = getNormalizedDomain(url);
+			if (!domain) {
 				setCaptureState({ status: "idle" });
+				setError("Could not determine a company domain from this page.");
 				return;
 			}
 
-			const domain = domainResponse.data.domain;
 			if (isIgnoredCompanyDomain(domain)) {
 				setCaptureState({ status: "idle" });
 				return;
@@ -474,10 +502,10 @@ export default function App() {
 				matchedBy?: string;
 			}>;
 
-			if (duplicateResponse.success) {
-				if (duplicateResponse.data?.exists && duplicateResponse.data.record) {
-					setCaptureState({
-						status: "exists",
+				if (duplicateResponse.success) {
+					if (duplicateResponse.data?.exists && duplicateResponse.data.record) {
+						setCaptureState({
+							status: "exists",
 						existingRecord: {
 							id: duplicateResponse.data.record.id,
 							type: duplicateResponse.data.record.type as "person" | "company",
@@ -493,27 +521,27 @@ export default function App() {
 						data: {
 							type: "company",
 							domain,
-						} as DomainCompanyData,
-					});
-				}
-			} else {
-				if (
-					duplicateResponse.error?.includes("not configured") ||
-					duplicateResponse.error?.includes("No authentication")
-				) {
-					setCaptureState({ status: "idle", error: "Configure Twenty URL" });
+							} as DomainCompanyData,
+						});
+					}
 				} else {
-					// Duplicate check failed transiently — still show the domain so the user can add it.
-					setCaptureState({ status: "ready", data: { type: "company", domain } as DomainCompanyData });
+					if (duplicateResponse.error?.includes("not configured")) {
+						setCaptureState({ status: "idle", error: "Configure Twenty URL" });
+					} else if (isAuthStateError(duplicateResponse.error)) {
+						handleSessionExpired(duplicateResponse.error);
+					} else {
+						// Duplicate check failed transiently — still show the domain so the user can add it.
+						setCaptureState({ status: "ready", data: { type: "company", domain } as DomainCompanyData });
+					}
 				}
+			} catch (err) {
+				console.error("Error checking domain:", err);
+				setCaptureState({ status: "error", error: "Failed to check domain" });
+				setError("Failed to check company domain from this page.");
+			} finally {
+				setIsCheckingPage(false);
 			}
-		} catch (err) {
-			console.error("Error checking domain:", err);
-			setCaptureState({ status: "error", error: "Failed to check domain" });
-		} finally {
-			setIsCheckingPage(false);
 		}
-	}
 
 	async function handleCapture() {
 		if (captureState.status !== "ready" || !captureState.data) return;
@@ -553,6 +581,10 @@ export default function App() {
 						setCaptureState((prev) => ({ ...prev, status: "exists" }));
 					}, 2000);
 				} else {
+					if (isAuthStateError(response.error)) {
+						handleSessionExpired(response.error);
+						return;
+					}
 					setCaptureState({
 						...captureState,
 						status: "error",
@@ -585,6 +617,10 @@ export default function App() {
 						setCaptureState((prev) => ({ ...prev, status: "exists" }));
 					}, 2000);
 				} else {
+					if (isAuthStateError(response.error)) {
+						handleSessionExpired(response.error);
+						return;
+					}
 					setCaptureState({
 						...captureState,
 						status: "error",
@@ -663,6 +699,10 @@ export default function App() {
 					setCaptureState((prev) => ({ ...prev, status: "exists" }));
 				}, 2000);
 			} else {
+				if (isAuthStateError(response.error)) {
+					handleSessionExpired(response.error);
+					return;
+				}
 				setCaptureState({
 					...captureState,
 					status: "error",
@@ -847,6 +887,10 @@ export default function App() {
 			setIsConnected(connected);
 
 			if (!connected) {
+				if (isAuthStateError(response.error)) {
+					handleSessionExpired(response.error);
+					return;
+				}
 				setError(
 					response.error || "Connection test failed. Check your URL and login.",
 				);
@@ -859,6 +903,10 @@ export default function App() {
 			setIsConnected(false);
 			const errorMessage =
 				err instanceof Error ? err.message : "Connection test failed";
+			if (isAuthStateError(errorMessage)) {
+				handleSessionExpired(errorMessage);
+				return;
+			}
 			setError(errorMessage);
 		} finally {
 			setIsTesting(false);
@@ -1254,12 +1302,28 @@ export default function App() {
 												LinkedIn profile or company page to capture it.
 											</p>
 											<Button
-												onClick={checkCurrentTab}
+												onClick={() => {
+													if (currentTabUrl) {
+														void checkDomainForCapture(currentTabUrl);
+														return;
+													}
+
+													void checkCurrentTab();
+												}}
 												className="w-full"
 												variant="outline"
 												size="sm"
+												disabled={
+													captureState.status === "loading" ||
+													captureState.status === "saving"
+												}
 											>
-												Check for Company Domain
+												{captureState.status === "loading" && (
+													<div className="w-4 h-4 border-2 border-border border-t-transparent rounded-full animate-spin"></div>
+												)}
+												{captureState.status === "loading"
+													? "Checking company..."
+													: "Check for Company Domain"}
 											</Button>
 										</>
 									)}

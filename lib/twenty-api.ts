@@ -394,14 +394,6 @@ export class TwentyApiClient {
     return response.json();
   }
 
-  private isAuthGraphQLError(errorMessage: string): boolean {
-    const normalized = errorMessage.toLowerCase();
-    return normalized.includes('unauthorized')
-      || normalized.includes('authentication')
-      || normalized.includes('token')
-      || normalized.includes('forbidden');
-  }
-
   private isSchemaCompatibilityError(errorMessage: string): boolean {
     const normalized = errorMessage.toLowerCase();
     return normalized.includes('cannot query field')
@@ -768,7 +760,7 @@ export class TwentyApiClient {
         if (result.errors?.length) {
           const errorMessage = result.errors[0].message;
 
-          if (this.isAuthGraphQLError(errorMessage)) {
+          if (isTwentyAuthErrorMessage(errorMessage)) {
             throw new Error('Authentication failed. Please log in to your Twenty instance.');
           }
 
@@ -802,7 +794,12 @@ export class TwentyApiClient {
 
       return false;
     } catch (error) {
-      console.error('[Twenty] Connection test error:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (isTwentyAuthErrorMessage(errorMessage)) {
+        console.info('[Twenty] Connection test requires sign-in.');
+      } else {
+        console.error('[Twenty] Connection test error:', error);
+      }
       // Re-throw to preserve error details
       throw error;
     }
@@ -1233,4 +1230,18 @@ export function extractTokenFromCookie(
   } catch {
     return null;
   }
+}
+
+export function isTwentyAuthErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('unauthorized')
+    || normalized.includes('authentication')
+    || normalized.includes('forbidden')
+    || normalized.includes('invalid token')
+    || normalized.includes('token')
+    || normalized.includes('jwt')
+    || normalized.includes('access denied')
+    || normalized.includes('expired')
+    || normalized.includes('session')
+    || normalized.includes('not logged in');
 }
