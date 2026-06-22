@@ -502,12 +502,8 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
 
       case 'CREATE_RECORD': {
         const data = message.payload as LinkedInProfileData | LinkedInCompanyData;
-        try {
-          const result = await createRecord(data);
-          return { success: true, data: result };
-        } catch (err) {
-          throw err;
-        }
+        const result = await createRecord(data);
+        return { success: true, data: result };
       }
 
       case 'GET_SETTINGS': {
@@ -589,12 +585,8 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
           data: LinkedInProfileData | LinkedInCompanyData;
         };
         const client = await getApiClient();
-        try {
-          await client.updateRecordWithLinkedInData(id, type, data);
-          return { success: true, data: { id } };
-        } catch (err) {
-          throw err;
-        }
+        await client.updateRecordWithLinkedInData(id, type, data);
+        return { success: true, data: { id } };
       }
 
       case 'SCRAPE_PAGE': {
@@ -698,7 +690,12 @@ export default defineBackground(() => {
   browser.runtime.onMessage.addListener(
     (message: ExtensionMessage, _sender, sendResponse) => {
       // Handle async by returning true and using sendResponse
-      handleMessage(message).then(sendResponse);
+      handleMessage(message)
+        .then(sendResponse)
+        .catch((err) => {
+          console.error('Message handler error:', err);
+          sendResponse({ success: false, error: err?.message || 'Unknown error' });
+        });
       return true; // Indicates we will send a response asynchronously
     }
   );

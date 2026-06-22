@@ -729,7 +729,7 @@ export default function App() {
 
 		switch (captureState.status) {
 			case "idle":
-				return isDomainCapture ? "Check website" : "Checking profile...";
+				return isDomainCapture ? "Check website" : autoFetchAttempts >= 3 ? "Fetch Profile" : "Checking profile...";
 			case "loading":
 				return isDomainCapture ? "Checking company..." : "Checking...";
 			case "ready":
@@ -856,7 +856,7 @@ export default function App() {
 
 	async function testConnection(
 		urlOverride?: string,
-		options?: { showSuccess?: boolean },
+		options?: { showSuccess?: boolean; requestPermission?: boolean },
 	) {
 		const targetUrl = normalizeTwentyUrl(urlOverride || savedTwentyUrl);
 		if (!targetUrl) {
@@ -870,7 +870,15 @@ export default function App() {
 		setError(null);
 
 		try {
-			const hasPermission = await ensureTwentyPermission(targetUrl);
+			// Only request permission when called from a direct user gesture.
+			// When called programmatically (e.g. after save or on load), just check
+			// whether the permission is already granted rather than triggering a prompt,
+			// since browser.permissions.request() silently fails outside a user gesture.
+			const origins = getTwentyOriginPatterns(targetUrl);
+			let hasPermission = origins.length > 0 && await browser.permissions.contains({ origins });
+			if (!hasPermission && options?.requestPermission) {
+				hasPermission = await ensureTwentyPermission(targetUrl);
+			}
 			if (!hasPermission) {
 				setError(
 					"Permission denied. Please allow access to your Twenty domain.",
@@ -1106,7 +1114,7 @@ export default function App() {
 											variant="outline"
 											onClick={
 												hasToken
-													? () => testConnection(undefined, { showSuccess: true })
+													? () => testConnection(undefined, { showSuccess: true, requestPermission: true })
 													: loadSettings
 											}
 											disabled={isTesting}
@@ -1138,7 +1146,7 @@ export default function App() {
 											className="flex-1"
 											variant="outline"
 											disabled={isTesting || !isConfigured || isEditingTwentyUrl}
-											onClick={() => testConnection(undefined, { showSuccess: true })}
+											onClick={() => testConnection(undefined, { showSuccess: true, requestPermission: true })}
 										>
 											{isTesting ? "Testing..." : "Test Connection"}
 										</Button>
@@ -1210,6 +1218,7 @@ export default function App() {
 												captureState.status === "error" ||
 												captureState.status === "idle"
 											) {
+												setAutoFetchAttempts(0);
 												checkCurrentTab();
 											}
 										}}
@@ -1225,7 +1234,21 @@ export default function App() {
 										<Sparkles />
 										<span>{getCaptureButtonText()}</span>
 									</Button>
-									{captureState.status === "exists" &&
+								{captureState.status === "exists" &&
+									!captureState.data && (
+											<Button
+												className="mt-2 w-full"
+												variant="secondary"
+												onClick={() => {
+													setAutoFetchAttempts(0);
+													checkCurrentTab();
+												}}
+											>
+												<RefreshCw className="size-4" />
+												Fetch Profile
+											</Button>
+										)}
+								{captureState.status === "exists" &&
 										captureState.data &&
 										!("domain" in captureState.data) && (
 											<Button
@@ -1274,6 +1297,7 @@ export default function App() {
 														captureState.status === "error" ||
 														captureState.status === "idle"
 													) {
+														setAutoFetchAttempts(0);
 														checkCurrentTab();
 													}
 												}}
