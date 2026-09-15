@@ -96,9 +96,3 @@ export function getTwentyOriginPatterns(twentyUrl: string): string[] {
 
 	return Array.from(hostnames).map((host) => `${protocol}//${host}/*`);
 }
-
-export function getTwentyCookieUrls(twentyUrl: string): string[] {
-	return getTwentyOriginPatterns(twentyUrl).map((origin) =>
-		origin.replace(/\/\*$/, ""),
-	);
-}

@@ -254,6 +254,9 @@ const INPUT_FIELDS_QUERY = `
   }
 `;
 
+export const NO_API_KEY_MESSAGE =
+  'No API key configured. Add your Twenty API key in the extension settings.';
+
 export class TwentyApiClient {
   private baseUrl: string;
   private token: string | null = null;
@@ -429,7 +432,7 @@ export class TwentyApiClient {
     variables?: Record<string, unknown>
   ): Promise<GraphQLResponse<T>> {
     if (!this.token) {
-      throw new Error('No API key configured. Add your Twenty API key in the extension settings.');
+      throw new Error(NO_API_KEY_MESSAGE);
     }
 
     let response: Response;
@@ -1044,7 +1047,7 @@ export class TwentyApiClient {
 
 // Twenty API keys are JWTs. Accept a pasted "Bearer <key>" too and reject anything with whitespace.
 export function normalizeApiKey(value: string): string | null {
-  const trimmed = value.trim().replace(/^Bearer\s+/i, '').trim();
+  const trimmed = value.trim().replace(/^Bearer\s+/i, '');
   if (!trimmed || /\s/.test(trimmed)) {
     return null;
   }

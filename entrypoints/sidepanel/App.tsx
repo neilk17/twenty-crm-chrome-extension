@@ -183,9 +183,11 @@ export default function App() {
 			},
 			{
 				title: "Add an API key",
-				complete: hasApiKey,
+				complete: hasApiKey && isConnected,
 				description: hasApiKey
-					? `Key saved on this device (${apiKeyPreview}).`
+					? isConnected
+						? `Key saved on this device (${apiKeyPreview}).`
+						: "Twenty did not accept this key. Paste a current one below."
 					: "In Twenty, open Settings → APIs & Webhooks, create a key, and paste it below.",
 			},
 			{
@@ -1063,7 +1065,7 @@ export default function App() {
 								<div className="flex flex-col gap-2">
 									<CardTitle>
 										{isConfigured && !isEditingTwentyUrl
-											? hasApiKey
+											? hasApiKey && isConnected
 												? "Twenty is connected"
 												: "Finish your Twenty setup"
 											: "Set up Twenty"}

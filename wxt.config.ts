@@ -1,7 +1,7 @@
 import { defineConfig } from 'wxt';
 
 const buildChannel = process.env.BUILD_CHANNEL === 'beta' ? 'beta' : 'stable';
-const extensionVersion = '1.0.12';
+const extensionVersion = '1.0.13';
 const isBeta = buildChannel === 'beta';
 
 export default defineConfig({

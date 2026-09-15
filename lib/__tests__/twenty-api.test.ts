@@ -193,3 +193,9 @@ describe('schema-dependent optional fields', () => {
     expect(introspectionCalls).toHaveLength(1);
   });
 });
+
+describe('normalizeApiKey whitespace handling', () => {
+  it('strips a Bearer prefix with any amount of following whitespace', () => {
+    expect(normalizeApiKey('Bearer    abc.def.ghi')).toBe('abc.def.ghi');
+  });
+});

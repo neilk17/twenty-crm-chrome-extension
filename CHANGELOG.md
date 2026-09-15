@@ -2,6 +2,27 @@
 
 All notable changes to Twenty CRM LinkedIn Capture Extension.
 
+## [1.0.13] - 2026-09-15
+
+### 🔒 Security
+
+- The stored API key is now cleared when the Twenty URL is changed. Previously
+  the key saved for one instance was kept and immediately sent to the newly
+  entered host, which could disclose it to a mistyped or hostile URL. After
+  changing the URL, enter a key for the new workspace.
+
+### 🐛 Fixes
+
+- The setup card no longer reports "Twenty is connected" while the banner says
+  the key was rejected. The connection step is marked complete only once the key
+  actually authenticates.
+
+### 🔧 Technical
+
+- Settings changes are resolved by a single tested function shared by the
+  background handler.
+- Removed dead cookie-era code and an unreachable permission error branch.
+
 ## [1.0.12] - 2026-09-15
 
 ### 💥 Breaking

@@ -1,7 +1,12 @@
-import { TwentyApiClient, isTwentyAuthErrorMessage, normalizeApiKey } from '../lib/twenty-api';
+import {
+  TwentyApiClient,
+  isTwentyAuthErrorMessage,
+  NO_API_KEY_MESSAGE,
+} from '../lib/twenty-api';
 import { getSettings, saveSettings, addToRecentCaptures, getRecentCaptures } from '../lib/storage';
 import { getNormalizedDomain } from '../lib/domain-extractor';
 import { normalizeTwentyUrl, resolveTwentyApiBaseUrl } from '../lib/twenty-url';
+import { resolveSettingsUpdate } from '../lib/settings-update';
 import type { ExtensionMessage, ExtensionResponse, LinkedInProfileData, LinkedInCompanyData, DomainCompanyData } from '../types';
 
 // Cache for API client
@@ -11,8 +16,6 @@ let cachedTwentyUrl: string | null = null;
 function isAuthError(error: unknown): boolean {
   return error instanceof Error && isTwentyAuthErrorMessage(error.message);
 }
-
-const NO_API_KEY_MESSAGE = 'No API key configured. Add your Twenty API key in the extension settings.';
 
 function apiKeyPreview(apiKey: string): string {
   return apiKey.length > 6 ? `…${apiKey.slice(-6)}` : '';
@@ -244,7 +247,7 @@ async function testConnection(): Promise<{ connected: boolean; error?: string }>
     const client = await getApiClient();
     const connected = await client.testConnection();
     if (!connected) {
-      return { connected: false, error: 'Failed to connect to Twenty API. Please check your URL and ensure you are logged in.' };
+      return { connected: false, error: 'Connected to Twenty, but the API key could not read this workspace. Check the key under Settings → APIs & Webhooks.' };
     }
     return { connected: true };
   } catch (err) {
@@ -273,9 +276,6 @@ async function testConnection(): Promise<{ connected: boolean; error?: string }>
         connected: false,
         error: 'Twenty rejected the API key. Create a new key under Settings → APIs & Webhooks and paste it again.',
       };
-    }
-    if (errorMessage.includes('Missing host permission')) {
-      return { connected: false, error: 'Permission required. Click "Test Connection" again and allow access to your Twenty domain.' };
     }
     if (errorMessage.includes('HTTP error')) {
       return { connected: false, error: 'Could not reach your Twenty instance. Please check the URL and ensure it is accessible.' };
@@ -333,32 +333,22 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
 
       case 'SAVE_SETTINGS': {
         const newSettings = message.payload as { twentyUrl?: string; apiKey?: string };
-        const normalizedSettings: { twentyUrl?: string; apiKey?: string } = {};
+        const currentSettings = await getSettings();
+        const update = resolveSettingsUpdate(currentSettings, newSettings);
 
-        if (newSettings.twentyUrl !== undefined) {
-          const validatedTwentyUrl = normalizeTwentyUrl(newSettings.twentyUrl);
-          if (!validatedTwentyUrl) {
-            return {
-              success: false,
-              error: 'Enter a valid Twenty URL, for example https://app.twenty.com or https://crm.example.com.'
-            };
-          }
-          normalizedSettings.twentyUrl = validatedTwentyUrl;
+        if (!update.ok) {
+          return { success: false, error: update.error };
         }
 
-        if (newSettings.apiKey !== undefined) {
-          const validatedApiKey = normalizeApiKey(newSettings.apiKey);
-          if (!validatedApiKey) {
-            return {
-              success: false,
-              error: 'Paste the API key exactly as Twenty shows it under Settings → APIs & Webhooks.'
-            };
-          }
-          normalizedSettings.apiKey = validatedApiKey;
+        if (update.changes.apiKey === '' && currentSettings.apiKey) {
+          console.info('Twenty URL changed; clearing the stored API key.');
         }
 
-        console.log('Saving settings:', { ...normalizedSettings, apiKey: normalizedSettings.apiKey ? '[redacted]' : undefined });
-        await saveSettings(normalizedSettings);
+        console.log('Saving settings:', {
+          ...update.changes,
+          apiKey: update.changes.apiKey ? '[redacted]' : update.changes.apiKey,
+        });
+        await saveSettings(update.changes);
         // Clear cached client so the next request picks up the new URL or key
         apiClient = null;
         cachedTwentyUrl = null;
