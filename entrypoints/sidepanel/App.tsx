@@ -97,11 +97,14 @@ function isAuthStateError(message?: string | null): boolean {
 	if (!message) return false;
 
 	const normalized = message.toLowerCase();
+	// A missing key is a setup state, not a rejected credential.
+	if (normalized.includes("no api key configured")) return false;
 	return (
 		normalized.includes("authentication") ||
 		normalized.includes("token") ||
 		normalized.includes("expired") ||
 		normalized.includes("session") ||
+		normalized.includes("api key") ||
 		normalized.includes("not logged in")
 	);
 }
@@ -109,7 +112,11 @@ function isAuthStateError(message?: string | null): boolean {
 export default function App() {
 	const [savedTwentyUrl, setSavedTwentyUrl] = useState("");
 	const [twentyUrlInput, setTwentyUrlInput] = useState("");
-	const [hasToken, setHasToken] = useState(false);
+	const [hasApiKey, setHasApiKey] = useState(false);
+	const [apiKeyPreview, setApiKeyPreview] = useState("");
+	const [apiKeyInput, setApiKeyInput] = useState("");
+	const [isEditingApiKey, setIsEditingApiKey] = useState(false);
+	const [isSavingApiKey, setIsSavingApiKey] = useState(false);
 	const [isConnected, setIsConnected] = useState(false);
 	const [isLoading, setIsLoading] = useState(true);
 	const [isSaving, setIsSaving] = useState(false);
@@ -139,23 +146,23 @@ export default function App() {
 		[currentTabUrl, savedTwentyUrl],
 	);
 	const canCollapseSetupCard = useMemo(
-		() => isConfigured && hasToken && isConnected && !isEditingTwentyUrl,
-		[hasToken, isConfigured, isConnected, isEditingTwentyUrl],
+		() => isConfigured && hasApiKey && isConnected && !isEditingTwentyUrl,
+		[hasApiKey, isConfigured, isConnected, isEditingTwentyUrl],
 	);
 
 	const connectionStatus = useMemo(() => {
 		if (!isConfigured) return "not-configured";
-		if (!hasToken) return "no-session";
+		if (!hasApiKey) return "no-api-key";
 		if (isConnected) return "connected";
 		return "disconnected";
-	}, [isConfigured, hasToken, isConnected]);
+	}, [isConfigured, hasApiKey, isConnected]);
 
 	const statusText = useMemo(() => {
 		switch (connectionStatus) {
 			case "not-configured":
 				return "Not configured";
-			case "no-session":
-				return "Not logged in";
+			case "no-api-key":
+				return "No API key";
 			case "connected":
 				return "Connected";
 			case "disconnected":
@@ -175,31 +182,31 @@ export default function App() {
 					: "Enter the exact URL where you open Twenty, then click Save.",
 			},
 			{
-				title: "Allow access and test it",
+				title: "Add an API key",
+				complete: hasApiKey,
+				description: hasApiKey
+					? `Key saved on this device (${apiKeyPreview}).`
+					: "In Twenty, open Settings → APIs & Webhooks, create a key, and paste it below.",
+			},
+			{
+				title: "Test the connection",
 				complete: isConnected,
 				description: isConnected
 					? "The extension can reach your Twenty workspace."
-					: "After saving, allow the browser permission prompt and run Test Connection.",
-			},
-			{
-				title: "Sign in to Twenty",
-				complete: hasToken,
-				description: hasToken
-					? "An active Twenty session was detected."
-					: "Open Twenty, sign in, then come back to capture LinkedIn pages and company sites.",
+					: "Allow the browser permission prompt if asked, then run Test Connection.",
 			},
 		],
-		[hasToken, isConfigured, isConnected],
+		[apiKeyPreview, hasApiKey, isConfigured, isConnected],
 	);
 
 	function handleSessionExpired(message?: string | null) {
-		console.info("Twenty session is no longer active:", message);
-		setHasToken(false);
+		console.info("Twenty rejected the API key:", message);
 		setIsConnected(false);
+		setIsEditingApiKey(true);
 		setCaptureState({ status: "idle" });
 		setSuccess(null);
 		setError(
-			"Your Twenty session expired. Open Twenty, sign in again, then click \"I've signed in\".",
+			"Twenty rejected the API key. Create a new key under Settings → APIs & Webhooks and paste it below.",
 		);
 	}
 
@@ -255,10 +262,10 @@ export default function App() {
 	// Re-check the active LinkedIn tab once configuration/auth become available.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: only re-run when URL/token change
 	useEffect(() => {
-		if (savedTwentyUrl && hasToken) {
+		if (savedTwentyUrl && hasApiKey) {
 			checkCurrentTab();
 		}
-	}, [savedTwentyUrl, hasToken]);
+	}, [savedTwentyUrl, hasApiKey]);
 
 	useEffect(() => {
 		if (canCollapseSetupCard) {
@@ -278,7 +285,7 @@ export default function App() {
 	// If state is still idle on a LinkedIn page, retry automatically without requiring a button click.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: checkCurrentTab intentionally not in deps to avoid retry loops
 	useEffect(() => {
-		if (!savedTwentyUrl || !hasToken || isCheckingPage || isLoading) return;
+		if (!savedTwentyUrl || !hasApiKey || isCheckingPage || isLoading) return;
 		if (!currentTabUrl || !getLinkedInPageType(currentTabUrl)) return;
 		if (captureState.status !== "idle") return;
 		if (autoFetchAttempts >= 3) return;
@@ -291,7 +298,7 @@ export default function App() {
 		return () => clearTimeout(timeout);
 	}, [
 		savedTwentyUrl,
-		hasToken,
+		hasApiKey,
 		isCheckingPage,
 		isLoading,
 		currentTabUrl,
@@ -397,7 +404,7 @@ export default function App() {
 		url: string,
 		pageType: "person" | "company",
 	) {
-		if (!savedTwentyUrl || !hasToken) {
+		if (!savedTwentyUrl || !hasApiKey) {
 			setCaptureState({ status: "idle" });
 			return;
 		}
@@ -470,6 +477,11 @@ export default function App() {
 	}
 
 	async function checkDomainForCapture(url: string) {
+		if (!savedTwentyUrl || !hasApiKey) {
+			setCaptureState({ status: "idle" });
+			return;
+		}
+
 		setIsCheckingPage(true);
 		setError(null);
 		setCaptureState({ status: "loading" });
@@ -754,17 +766,22 @@ export default function App() {
 				type: "GET_SETTINGS",
 			})) as ExtensionResponse<{
 				twentyUrl: string;
-				hasToken: boolean;
+				hasApiKey: boolean;
+				apiKeyPreview?: string;
 				invalidTwentyUrl?: string;
 			}>;
 
 			if (response.success && response.data) {
 				const normalizedTwentyUrl = response.data.twentyUrl || "";
 				const invalidTwentyUrl = response.data.invalidTwentyUrl || "";
+				const savedApiKey = response.data.hasApiKey || false;
 				setSavedTwentyUrl(normalizedTwentyUrl);
 				setTwentyUrlInput(invalidTwentyUrl || normalizedTwentyUrl);
 				setIsEditingTwentyUrl(!normalizedTwentyUrl);
-				setHasToken(invalidTwentyUrl ? false : (response.data.hasToken || false));
+				setHasApiKey(savedApiKey);
+				setApiKeyPreview(response.data.apiKeyPreview || "");
+				setIsEditingApiKey(false);
+				setApiKeyInput("");
 				setError(
 					invalidTwentyUrl
 						? "Saved Twenty URL is invalid. Enter your full workspace URL again."
@@ -772,7 +789,7 @@ export default function App() {
 				);
 				setSuccess(null);
 
-				if (normalizedTwentyUrl && response.data.hasToken && !invalidTwentyUrl) {
+				if (normalizedTwentyUrl && savedApiKey && !invalidTwentyUrl) {
 					await testConnection(normalizedTwentyUrl, { showSuccess: false });
 				} else {
 					setIsConnected(false);
@@ -851,6 +868,58 @@ export default function App() {
 			setTimeout(() => {
 				setSuccess(null);
 			}, 3000);
+		}
+	}
+
+	async function saveApiKey() {
+		if (!apiKeyInput.trim()) {
+			setError("Paste your Twenty API key first.");
+			return;
+		}
+
+		setIsSavingApiKey(true);
+		setError(null);
+		setSuccess(null);
+
+		try {
+			const response = (await browser.runtime.sendMessage({
+				type: "SAVE_SETTINGS",
+				payload: { apiKey: apiKeyInput },
+			})) as ExtensionResponse;
+
+			if (!response.success) {
+				setError(response.error || "Failed to save API key");
+				return;
+			}
+
+			setApiKeyInput("");
+			setIsEditingApiKey(false);
+			// Reload to pick up the key hint, then verify it against the workspace.
+			await loadSettings();
+		} catch (err) {
+			console.error("Error saving API key:", err);
+			setError("Failed to save API key");
+		} finally {
+			setIsSavingApiKey(false);
+		}
+	}
+
+	function handleEditApiKey() {
+		setApiKeyInput("");
+		setIsEditingApiKey(true);
+		setError(null);
+		setSuccess(null);
+	}
+
+	function handleCancelApiKeyEdit() {
+		setApiKeyInput("");
+		setIsEditingApiKey(false);
+		setError(null);
+	}
+
+	function openApiSettings() {
+		if (savedTwentyUrl) {
+			browser.tabs.create({ url: `${savedTwentyUrl}/settings/api-webhooks` });
 		}
 	}
 
@@ -994,7 +1063,7 @@ export default function App() {
 								<div className="flex flex-col gap-2">
 									<CardTitle>
 										{isConfigured && !isEditingTwentyUrl
-											? hasToken
+											? hasApiKey
 												? "Twenty is connected"
 												: "Finish your Twenty setup"
 											: "Set up Twenty"}
@@ -1074,15 +1143,65 @@ export default function App() {
 									</div>
 								)}
 
-								{isConfigured && !hasToken && !isEditingTwentyUrl && (
-									<div className="rounded-lg border border-dashed p-4">
-										<p className="text-sm font-medium">One step left</p>
-										<p className="mt-1 text-xs text-muted-foreground">
-											Open Twenty, sign in, then come back here and click
-											&quot;I&apos;ve signed in&quot;.
-										</p>
+								{isConfigured && !isEditingTwentyUrl && (hasApiKey && !isEditingApiKey ? (
+									<div className="flex items-center justify-between gap-3 rounded-lg border p-4">
+										<div className="flex min-w-0 flex-col gap-1">
+											<p className="text-xs font-medium text-muted-foreground">
+												API key
+											</p>
+											<p className="font-mono text-sm">{apiKeyPreview || "Saved"}</p>
+										</div>
+										<Button variant="ghost" size="sm" onClick={handleEditApiKey}>
+											Change key
+										</Button>
 									</div>
-								)}
+								) : (
+									<div className="grid w-full items-center gap-3 rounded-lg border border-dashed p-4">
+										<Label htmlFor="apiKey">Twenty API key</Label>
+										<InputGroup>
+											<InputGroupInput
+												id="apiKey"
+												type="password"
+												autoComplete="off"
+												placeholder="Paste the key from Settings → APIs & Webhooks"
+												value={apiKeyInput}
+												onChange={(e) => setApiKeyInput(e.target.value)}
+												onKeyDown={(e) => {
+													if (e.key === "Enter") saveApiKey();
+												}}
+											/>
+										</InputGroup>
+										<p className="text-xs text-muted-foreground">
+											Create a key in Twenty under Settings → APIs & Webhooks. It is
+											stored only on this device and is never synced.
+										</p>
+										<div className="flex flex-col gap-2 sm:flex-row">
+											<Button
+												className="flex-1"
+												disabled={isSavingApiKey}
+												onClick={saveApiKey}
+											>
+												{isSavingApiKey ? "Saving..." : "Save key"}
+											</Button>
+											<Button
+												className="flex-1"
+												variant="outline"
+												onClick={openApiSettings}
+											>
+												Open API settings
+											</Button>
+											{hasApiKey && (
+												<Button
+													className="flex-1"
+													variant="ghost"
+													onClick={handleCancelApiKeyEdit}
+												>
+													Cancel
+												</Button>
+											)}
+										</div>
+									</div>
+								))}
 
 								{error && (
 									<div role="alert" className="rounded-lg bg-status-error-bg px-3 py-2.5 text-xs text-status-error">
@@ -1104,18 +1223,10 @@ export default function App() {
 										<Button
 											className="flex-1"
 											variant="outline"
-											onClick={
-												hasToken
-													? () => testConnection(undefined, { showSuccess: true })
-													: loadSettings
-											}
-											disabled={isTesting}
+											onClick={() => testConnection(undefined, { showSuccess: true })}
+											disabled={isTesting || !hasApiKey}
 										>
-											{isTesting
-												? "Testing..."
-												: hasToken
-													? "Test Connection"
-													: "I've signed in"}
+											{isTesting ? "Testing..." : "Test Connection"}
 										</Button>
 										<Button
 											className="flex-1"
@@ -1158,7 +1269,7 @@ export default function App() {
 						)}
 					</section>
 
-					{isConfigured && hasToken && !isOnTwentyWorkspace && (
+					{isConfigured && hasApiKey && !isOnTwentyWorkspace && (
 						<section className="mb-5">
 							{currentTabUrl && getLinkedInPageType(currentTabUrl) ? (
 								<div className="bg-card rounded-lg p-4 border ">

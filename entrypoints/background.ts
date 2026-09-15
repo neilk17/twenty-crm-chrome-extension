@@ -1,122 +1,21 @@
-import {
-  TwentyApiClient,
-  extractTokenFromCookie,
-  isTwentyAuthErrorMessage,
-} from '../lib/twenty-api';
+import { TwentyApiClient, isTwentyAuthErrorMessage, normalizeApiKey } from '../lib/twenty-api';
 import { getSettings, saveSettings, addToRecentCaptures, getRecentCaptures } from '../lib/storage';
 import { getNormalizedDomain } from '../lib/domain-extractor';
-import {
-  getTwentyCookieUrls,
-  normalizeTwentyUrl,
-  resolveTwentyApiBaseUrl,
-} from '../lib/twenty-url';
+import { normalizeTwentyUrl, resolveTwentyApiBaseUrl } from '../lib/twenty-url';
 import type { ExtensionMessage, ExtensionResponse, LinkedInProfileData, LinkedInCompanyData, DomainCompanyData } from '../types';
 
 // Cache for API client
 let apiClient: TwentyApiClient | null = null;
 let cachedTwentyUrl: string | null = null;
-let cachedAuthToken: { apiBaseUrl: string; token: string; checkedAt: number } | null = null;
-
-const AUTH_TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
-
-type TokenValidationResult = 'valid' | 'invalid' | 'inconclusive';
-
-function isTokenExpired(token: string): boolean {
-  try {
-    const [, payload] = token.split('.');
-    if (!payload) {
-      return false;
-    }
-
-    const padded = payload.replace(/-/g, '+').replace(/_/g, '/')
-      .padEnd(Math.ceil(payload.length / 4) * 4, '=');
-    const decoded = atob(padded);
-    const parsed = JSON.parse(decoded) as { exp?: unknown };
-
-    if (typeof parsed.exp !== 'number') {
-      return false;
-    }
-
-    return (parsed.exp * 1000) <= (Date.now() + 30 * 1000);
-  } catch {
-    return false;
-  }
-}
 
 function isAuthError(error: unknown): boolean {
   return error instanceof Error && isTwentyAuthErrorMessage(error.message);
 }
 
-async function validateTokenForApi(apiBaseUrl: string, token: string): Promise<TokenValidationResult> {
-  const probes = [
-    `query { currentUser { id } }`,
-    `query { currentWorkspace { id } }`,
-    `query { people(first: 1) { edges { node { id } } } }`,
-  ];
+const NO_API_KEY_MESSAGE = 'No API key configured. Add your Twenty API key in the extension settings.';
 
-  let sawInconclusiveProbe = false;
-
-  const performRequest = async (bearerToken: string | null, query: string): Promise<Response> =>
-    fetch(`${apiBaseUrl}/graphql`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
-      },
-      credentials: 'include',
-      body: JSON.stringify({ query }),
-    });
-
-  for (const query of probes) {
-    let response: Response;
-    try {
-      response = await performRequest(token, query);
-
-      // Mirror the request path used by the API client: some deployments rely on cookie auth.
-      if (response.status === 401 || response.status === 403) {
-        response = await performRequest(null, query);
-      }
-    } catch {
-      sawInconclusiveProbe = true;
-      continue;
-    }
-
-    if (response.status === 401 || response.status === 403) {
-      return 'invalid';
-    }
-
-    if (!response.ok) {
-      sawInconclusiveProbe = true;
-      continue;
-    }
-
-    let result: unknown;
-    try {
-      result = await response.json();
-    } catch {
-      sawInconclusiveProbe = true;
-      continue;
-    }
-
-    const errors = (result as { errors?: Array<{ message?: string }> })?.errors || [];
-    if (!errors.length) {
-      return 'valid';
-    }
-
-    const errorText = errors
-      .map((error) => error?.message || '')
-      .filter(Boolean)
-      .join(' | ');
-
-    if (isTwentyAuthErrorMessage(errorText)) {
-      return 'invalid';
-    }
-
-    // Non-auth GraphQL errors still prove the token is accepted.
-    return 'valid';
-  }
-
-  return sawInconclusiveProbe ? 'inconclusive' : 'invalid';
+function apiKeyPreview(apiKey: string): string {
+  return apiKey.length > 6 ? `…${apiKey.slice(-6)}` : '';
 }
 
 // Get or create API client
@@ -138,107 +37,12 @@ async function getApiClient(): Promise<TwentyApiClient> {
     cachedTwentyUrl = apiBaseUrl;
   }
 
-  // Get fresh token from cookie
-  const token = await getAuthToken(settings.twentyUrl);
-  if (!token) {
-    throw new Error('No authentication token found. Please log in to Twenty CRM.');
+  if (!settings.apiKey) {
+    throw new Error(NO_API_KEY_MESSAGE);
   }
 
-  apiClient.setToken(token);
+  apiClient.setToken(settings.apiKey);
   return apiClient;
-}
-
-// Get auth token from Twenty's cookie
-async function getAuthToken(twentyUrl: string): Promise<string | null> {
-  try {
-    const apiBaseUrl = resolveTwentyApiBaseUrl(twentyUrl);
-    if (!apiBaseUrl) {
-      throw new Error('Invalid Twenty URL. Enter your full Twenty workspace URL.');
-    }
-    const cookieUrls = getTwentyCookieUrls(twentyUrl);
-    const cookieNames = ['tokenPair', 'accessToken', 'access-token'];
-    const tokenCandidates: string[] = [];
-    let checkedPermittedHost = false;
-
-    for (const url of cookieUrls) {
-      const hasHostPermission = await browser.permissions.contains({ origins: [`${url}/*`] });
-      if (!hasHostPermission) {
-        continue;
-      }
-
-      checkedPermittedHost = true;
-      for (const cookieName of cookieNames) {
-        const cookie = await browser.cookies.get({
-          url,
-          name: cookieName,
-        });
-
-        console.log('Cookie lookup for', url, cookieName, ':', cookie ? 'found' : 'not found');
-
-        if (!cookie?.value) {
-          continue;
-        }
-
-        const token = extractTokenFromCookie(cookie.value);
-        if (token) {
-          if (!tokenCandidates.includes(token)) {
-            tokenCandidates.push(token);
-          }
-          console.log('Successfully extracted token candidate from cookie', cookieName, 'for', url);
-          continue;
-        }
-
-        console.warn('Cookie found but token extraction failed for', url, cookieName);
-      }
-    }
-
-    if (!checkedPermittedHost) {
-      throw new Error('Missing host permission for your Twenty URL. Click Save or Test Connection and allow access.');
-    }
-
-    if (tokenCandidates.length === 0) {
-      return null;
-    }
-
-    if (
-      cachedAuthToken
-      && cachedAuthToken.apiBaseUrl === apiBaseUrl
-      && (Date.now() - cachedAuthToken.checkedAt) < AUTH_TOKEN_CACHE_TTL_MS
-      && !isTokenExpired(cachedAuthToken.token)
-      && tokenCandidates.includes(cachedAuthToken.token)
-    ) {
-      return cachedAuthToken.token;
-    }
-
-    let sawInconclusiveValidation = false;
-    for (const candidateToken of tokenCandidates) {
-      const validationResult = await validateTokenForApi(apiBaseUrl, candidateToken);
-      if (validationResult === 'valid') {
-        cachedAuthToken = {
-          apiBaseUrl,
-          token: candidateToken,
-          checkedAt: Date.now(),
-        };
-        console.log('Validated auth token candidate for', apiBaseUrl);
-        return candidateToken;
-      }
-
-      if (validationResult === 'inconclusive') {
-        sawInconclusiveValidation = true;
-      }
-    }
-
-    cachedAuthToken = null;
-    if (sawInconclusiveValidation) {
-      console.warn('Could not validate token candidates conclusively; using first extracted token as fallback.');
-      return tokenCandidates[0];
-    }
-
-    return null;
-  } catch (error) {
-    console.error('Error getting auth token:', error);
-    return null;
-  }
 }
 
 // Check if a person already exists (by LinkedIn URL or name)
@@ -445,8 +249,8 @@ async function testConnection(): Promise<{ connected: boolean; error?: string }>
     return { connected: true };
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-    if (isTwentyAuthErrorMessage(errorMessage) || errorMessage.includes('No authentication token')) {
-      console.info('Test connection requires an active Twenty session.');
+    if (isTwentyAuthErrorMessage(errorMessage) || errorMessage.includes('No API key')) {
+      console.info('Test connection needs a valid Twenty API key.');
     } else {
       console.error('Test connection failed:', err);
     }
@@ -461,8 +265,14 @@ async function testConnection(): Promise<{ connected: boolean; error?: string }>
         error: 'Enter a valid Twenty URL, for example https://app.twenty.com or https://crm.example.com.',
       };
     }
-    if (errorMessage.includes('No authentication token') || errorMessage.includes('No authentication')) {
-      return { connected: false, error: 'Not logged in. Please open your Twenty instance and log in, then try again.' };
+    if (errorMessage.includes('No API key')) {
+      return { connected: false, error: NO_API_KEY_MESSAGE };
+    }
+    if (isTwentyAuthErrorMessage(errorMessage)) {
+      return {
+        connected: false,
+        error: 'Twenty rejected the API key. Create a new key under Settings → APIs & Webhooks and paste it again.',
+      };
     }
     if (errorMessage.includes('Missing host permission')) {
       return { connected: false, error: 'Permission required. Click "Test Connection" again and allow access to your Twenty domain.' };
@@ -481,15 +291,6 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
 
   try {
     switch (message.type) {
-      case 'GET_AUTH_TOKEN': {
-        const settings = await getSettings();
-        if (!settings.twentyUrl) {
-          return { success: false, error: 'Twenty URL not configured' };
-        }
-        const token = await getAuthToken(settings.twentyUrl);
-        return { success: !!token, data: { hasToken: !!token } };
-      }
-
       case 'CHECK_DUPLICATE': {
         const { linkedinUrl, pageType, scrapedData } = message.payload as {
           linkedinUrl: string;
@@ -518,45 +319,49 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
         const invalidTwentyUrl = settings.twentyUrl && !normalizedTwentyUrl
           ? settings.twentyUrl
           : '';
-        const hasToken = normalizedTwentyUrl
-          ? !!(await getAuthToken(normalizedTwentyUrl))
-          : false;
+        // The key itself never leaves the background script; the panel only needs a hint.
         return {
           success: true,
           data: {
-            ...settings,
             twentyUrl: normalizedTwentyUrl || '',
             invalidTwentyUrl,
-            hasToken,
+            hasApiKey: !!settings.apiKey,
+            apiKeyPreview: apiKeyPreview(settings.apiKey),
           }
         };
       }
 
       case 'SAVE_SETTINGS': {
-        const newSettings = message.payload as { twentyUrl?: string };
-        const validatedTwentyUrl = newSettings.twentyUrl
-          ? normalizeTwentyUrl(newSettings.twentyUrl)
-          : newSettings.twentyUrl;
-        if (newSettings.twentyUrl && !validatedTwentyUrl) {
-          return {
-            success: false,
-            error: 'Enter a valid Twenty URL, for example https://app.twenty.com or https://crm.example.com.'
-          };
+        const newSettings = message.payload as { twentyUrl?: string; apiKey?: string };
+        const normalizedSettings: { twentyUrl?: string; apiKey?: string } = {};
+
+        if (newSettings.twentyUrl !== undefined) {
+          const validatedTwentyUrl = normalizeTwentyUrl(newSettings.twentyUrl);
+          if (!validatedTwentyUrl) {
+            return {
+              success: false,
+              error: 'Enter a valid Twenty URL, for example https://app.twenty.com or https://crm.example.com.'
+            };
+          }
+          normalizedSettings.twentyUrl = validatedTwentyUrl;
         }
-        const normalizedSettings = newSettings.twentyUrl
-          ? {
-              ...newSettings,
-              twentyUrl: validatedTwentyUrl as string,
-            }
-          : newSettings;
-        console.log('Saving settings:', normalizedSettings);
+
+        if (newSettings.apiKey !== undefined) {
+          const validatedApiKey = normalizeApiKey(newSettings.apiKey);
+          if (!validatedApiKey) {
+            return {
+              success: false,
+              error: 'Paste the API key exactly as Twenty shows it under Settings → APIs & Webhooks.'
+            };
+          }
+          normalizedSettings.apiKey = validatedApiKey;
+        }
+
+        console.log('Saving settings:', { ...normalizedSettings, apiKey: normalizedSettings.apiKey ? '[redacted]' : undefined });
         await saveSettings(normalizedSettings);
-        // Clear cached client when URL changes
-        if (newSettings.twentyUrl) {
-          apiClient = null;
-          cachedTwentyUrl = null;
-          cachedAuthToken = null;
-        }
+        // Clear cached client so the next request picks up the new URL or key
+        apiClient = null;
+        cachedTwentyUrl = null;
         console.log('Settings saved successfully');
         return { success: true };
       }
@@ -679,7 +484,7 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     const isExpectedSetupState = errorMessage.includes('Twenty URL not configured')
-      || errorMessage.includes('No authentication token')
+      || errorMessage.includes('No API key')
       || isTwentyAuthErrorMessage(errorMessage);
 
     if (!isExpectedSetupState) {

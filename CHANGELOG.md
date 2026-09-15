@@ -2,6 +2,35 @@
 
 All notable changes to Twenty CRM LinkedIn Capture Extension.
 
+## [1.0.12] - 2026-09-15
+
+### 💥 Breaking
+
+- **Authentication now uses a Twenty API key.** Recent Twenty versions moved the
+  web session into an httpOnly cookie and reject cookie-authenticated requests
+  from any origin other than the Twenty app itself, so a browser extension can
+  no longer reuse your signed-in session. After updating, open
+  **Settings → APIs & Webhooks** in Twenty, create an API key, and paste it into
+  the extension. The key is stored on this device only and is never synced.
+
+### 🐛 Fixes
+
+- Fixed the "Your Twenty session expired" loop that could not be cleared by
+  signing in again.
+- Fixed captures failing with `Object person doesn't have any "city" field` on
+  Twenty versions that removed the `city` field from People, and the equivalent
+  failure for `employees` on Companies. Optional fields are now checked against
+  your workspace's schema and skipped when absent.
+
+### 🔧 Technical
+
+- All API calls send the key as a Bearer token and never send cookies.
+- Removed the `cookies` permission, which is no longer needed.
+- Connection probes query `currentWorkspace` first, since API keys carry a
+  workspace but no user.
+- Added a unit test suite (`npm test`) covering authentication and
+  schema-dependent fields.
+
 ## [1.0.0] - 2024-12-17
 
 ### ✨ Features

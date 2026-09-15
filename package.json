@@ -1,7 +1,7 @@
 {
   "name": "twenty-crm-linkedin-extension",
   "description": "Chrome extension to capture LinkedIn profiles and companies to Twenty CRM",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "license": "AGPL-3.0",
   "type": "module",
   "scripts": {
@@ -14,6 +14,7 @@
     "zip:beta": "BUILD_CHANNEL=beta wxt zip && BETA_ZIP=$(ls -t .output/*-chrome.zip | head -n 1) && echo \"Created $BETA_ZIP\"",
     "zip:firefox": "wxt zip -b firefox",
     "compile": "tsc --noEmit",
+    "test": "vitest run",
     "postinstall": "wxt prepare"
   },
   "dependencies": {
@@ -37,6 +38,7 @@
     "@types/react-dom": "^19.0.0",
     "@wxt-dev/module-react": "^1.1.2",
     "typescript": "^5.9.3",
+    "vitest": "^5.0.1",
     "wxt": "^0.20.6"
   }
 }

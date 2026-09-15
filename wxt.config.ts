@@ -1,7 +1,7 @@
 import { defineConfig } from 'wxt';
 
 const buildChannel = process.env.BUILD_CHANNEL === 'beta' ? 'beta' : 'stable';
-const extensionVersion = '1.0.11';
+const extensionVersion = '1.0.12';
 const isBeta = buildChannel === 'beta';
 
 export default defineConfig({
@@ -25,8 +25,7 @@ export default defineConfig({
 
     permissions: [
       "activeTab",
-      "storage",
-      "cookies"
+      "storage"
     ],
 
     // Only request LinkedIn access upfront

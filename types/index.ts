@@ -46,6 +46,7 @@ export type TwentyPerson = {
   linkedinLink?: TwentyLinks;
   jobTitle?: string;
   avatarUrl?: string;
+  /** Removed from Person in later Twenty versions; sent only if the workspace has it. */
   city?: string;
   company?: {
     id: string;
@@ -58,29 +59,9 @@ export type TwentyCompany = {
   name: string;
   linkedinLink?: TwentyLinks;
   domainName?: TwentyLinks;
+  /** Removed from Company in later Twenty versions; sent only if the workspace has it. */
   employees?: number;
   idealCustomerProfile?: boolean;
-};
-
-export type TwentyTokenPair = {
-  accessOrWorkspaceAgnosticToken?: {
-    token: string;
-    expiresAt: string;
-  };
-  accessToken?: {
-    token: string;
-    expiresAt: string;
-  };
-  workspaceAccessToken?: {
-    token: string;
-    expiresAt: string;
-  };
-  refreshToken?: {
-    token: string;
-    expiresAt: string;
-  };
-  token?: string;
-  [key: string]: unknown;
 };
 
 // Extension State Types
@@ -105,7 +86,6 @@ export type CaptureState = {
 
 // Message Types for Extension Communication
 export type MessageType =
-  | 'GET_AUTH_TOKEN'
   | 'CHECK_DUPLICATE'
   | 'CHECK_DUPLICATE_BY_DOMAIN'
   | 'CREATE_RECORD'
@@ -133,6 +113,7 @@ export type ExtensionResponse<T = unknown> = {
 // Settings
 export type ExtensionSettings = {
   twentyUrl: string;
+  apiKey: string;
 };
 
 // GraphQL Response Types

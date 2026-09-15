@@ -1,5 +1,4 @@
 import type {
-  TwentyTokenPair,
   GraphQLResponse,
   PeopleQueryResult,
   CompaniesQueryResult,
@@ -27,7 +26,6 @@ const FIND_PERSON_BY_LINKEDIN = `
           }
           jobTitle
           avatarUrl
-          city
           company {
             id
             name
@@ -53,7 +51,6 @@ const FIND_COMPANY_BY_LINKEDIN = `
             primaryLinkUrl
             primaryLinkLabel
           }
-          employees
         }
       }
     }
@@ -236,16 +233,96 @@ function formatGraphQLErrors(
     .join('; ');
 }
 
+// Twenty workspaces differ in which standard fields exist: `employees` was
+// dropped from Company, and `city` from Person, in later versions, and admins
+// can remove fields too. Sending one the workspace lacks fails the whole
+// mutation ("Object company doesn't have any \"employees\" field"), so optional
+// fields are included only after the schema says they exist.
+type OptionalInputType =
+  | 'CompanyCreateInput'
+  | 'CompanyUpdateInput'
+  | 'PersonCreateInput'
+  | 'PersonUpdateInput';
+
+const INPUT_FIELDS_QUERY = `
+  query ExtensionInputFields($name: String!) {
+    __type(name: $name) {
+      inputFields {
+        name
+      }
+    }
+  }
+`;
+
 export class TwentyApiClient {
   private baseUrl: string;
   private token: string | null = null;
+  private supportedInputFields = new Map<OptionalInputType, Set<string>>();
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
   }
 
-  setToken(token: string) {
+  setToken(token: string | null) {
     this.token = token;
+  }
+
+  // Resolves once per input type per client, then stays cached.
+  private async getSupportedInputFields(
+    typeName: OptionalInputType
+  ): Promise<Set<string>> {
+    const cached = this.supportedInputFields.get(typeName);
+    if (cached) {
+      return cached;
+    }
+
+    let fields = new Set<string>();
+    try {
+      const result = await this.graphqlRequest<{
+        __type: { inputFields: Array<{ name: string }> | null } | null;
+      }>(INPUT_FIELDS_QUERY, { name: typeName });
+
+      const inputFields = result.data?.__type?.inputFields;
+      if (inputFields) {
+        fields = new Set(inputFields.map((field) => field.name));
+      } else {
+        // Introspection disabled or type renamed: assume the optional fields are
+        // absent rather than failing every capture on an unknown field.
+        console.warn('[Twenty] Could not introspect', typeName, '- omitting optional fields');
+      }
+    } catch (error) {
+      if (isTwentyAuthErrorMessage(error instanceof Error ? error.message : String(error))) {
+        throw error;
+      }
+      console.warn('[Twenty] Schema introspection failed for', typeName, error);
+    }
+
+    this.supportedInputFields.set(typeName, fields);
+    return fields;
+  }
+
+  // Drops any optional field this workspace does not expose.
+  private async pickSupportedFields<T extends Record<string, unknown>>(
+    typeName: OptionalInputType,
+    optionalValues: T
+  ): Promise<Partial<T>> {
+    const entries = Object.entries(optionalValues).filter(
+      ([, value]) => value !== undefined
+    );
+    if (entries.length === 0) {
+      return {};
+    }
+
+    const supported = await this.getSupportedInputFields(typeName);
+    const picked: Record<string, unknown> = {};
+    for (const [key, value] of entries) {
+      if (supported.has(key)) {
+        picked[key] = value;
+      } else {
+        console.info(`[Twenty] Skipping "${key}": not present on ${typeName} in this workspace`);
+      }
+    }
+    return picked as Partial<T>;
   }
 
   // Upload an image via GraphQL multipart upload
@@ -351,26 +428,23 @@ export class TwentyApiClient {
     query: string,
     variables?: Record<string, unknown>
   ): Promise<GraphQLResponse<T>> {
-    const performRequest = async (token: string | null): Promise<Response> =>
-      fetch(`${this.baseUrl}/graphql`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        credentials: 'include',
-        body: JSON.stringify({ query, variables }),
-      });
+    if (!this.token) {
+      throw new Error('No API key configured. Add your Twenty API key in the extension settings.');
+    }
 
     let response: Response;
     try {
-      response = await performRequest(this.token);
-
-      // Some Twenty deployments rely on cookie-based auth; retry without bearer once.
-      if ((response.status === 401 || response.status === 403) && this.token) {
-        console.warn('[Twenty] Bearer auth rejected, retrying request with cookie credentials only.');
-        response = await performRequest(null);
-      }
+      // Bearer-only. Twenty's session cookie is httpOnly and its CSRF guard rejects
+      // cookie-authenticated requests from extension origins, so cookies are never sent.
+      response = await fetch(`${this.baseUrl}/graphql`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.token}`,
+        },
+        credentials: 'omit',
+        body: JSON.stringify({ query, variables }),
+      });
     } catch (error) {
       // Network error (CORS, DNS, etc.)
       if (error instanceof TypeError && error.message.includes('fetch')) {
@@ -382,7 +456,7 @@ export class TwentyApiClient {
     if (!response.ok) {
       let errorMessage = `HTTP error: ${response.status}`;
       if (response.status === 401 || response.status === 403) {
-        errorMessage = 'Authentication failed. Please log in to your Twenty instance.';
+        errorMessage = 'Authentication failed. Twenty rejected the API key.';
       } else if (response.status === 404) {
         errorMessage = `GraphQL endpoint not found at ${this.baseUrl}/graphql. Please check your URL.`;
       } else if (response.status >= 500) {
@@ -671,7 +745,9 @@ export class TwentyApiClient {
         },
         jobTitle: data.headline || '',
         avatarUrl: avatarUrl,
-        city: data.location || '',
+        ...(await this.pickSupportedFields('PersonCreateInput', {
+          city: data.location || undefined,
+        })),
         // Link to company if we found/created one
         companyId: companyId,
       },
@@ -708,9 +784,11 @@ export class TwentyApiClient {
                 primaryLinkLabel: 'Website',
               }
             : undefined,
-          employees: data.employeeCount
-            ? this.parseEmployeeCount(data.employeeCount)
-            : undefined,
+          ...(await this.pickSupportedFields('CompanyCreateInput', {
+            employees: data.employeeCount
+              ? this.parseEmployeeCount(data.employeeCount)
+              : undefined,
+          })),
         },
       }
     );
@@ -739,14 +817,15 @@ export class TwentyApiClient {
           isValid: (data) => !!(data as { currentWorkspace?: { id?: string } })?.currentWorkspace?.id,
         },
         {
-          name: 'currentUser',
-          query: `query { currentUser { id } }`,
-          isValid: (data) => !!(data as { currentUser?: { id?: string } })?.currentUser?.id,
-        },
-        {
           name: 'people',
           query: `query { people(first: 1) { edges { node { id } } } }`,
           isValid: (data) => Array.isArray((data as { people?: { edges?: unknown[] } })?.people?.edges),
+        },
+        // Last on purpose: API keys have no user, so this only helps on older servers.
+        {
+          name: 'currentUser',
+          query: `query { currentUser { id } }`,
+          isValid: (data) => !!(data as { currentUser?: { id?: string } })?.currentUser?.id,
         },
       ];
 
@@ -761,7 +840,7 @@ export class TwentyApiClient {
           const errorMessage = result.errors[0].message;
 
           if (isTwentyAuthErrorMessage(errorMessage)) {
-            throw new Error('Authentication failed. Please log in to your Twenty instance.');
+            throw new Error('Authentication failed. Twenty rejected the API key.');
           }
 
           if (this.isSchemaCompatibilityError(errorMessage)) {
@@ -796,7 +875,7 @@ export class TwentyApiClient {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       if (isTwentyAuthErrorMessage(errorMessage)) {
-        console.info('[Twenty] Connection test requires sign-in.');
+        console.info('[Twenty] Connection test rejected the API key.');
       } else {
         console.error('[Twenty] Connection test error:', error);
       }
@@ -902,7 +981,9 @@ export class TwentyApiClient {
             },
             jobTitle: personData.headline || undefined,
             avatarUrl: avatarUrl,
-            city: personData.location || undefined,
+            ...(await this.pickSupportedFields('PersonUpdateInput', {
+              city: personData.location || undefined,
+            })),
             companyId: companyId,
           },
         }
@@ -930,9 +1011,11 @@ export class TwentyApiClient {
                 primaryLinkLabel: 'Website',
               }
               : undefined,
-            employees: companyData.employeeCount
-              ? this.parseEmployeeCount(companyData.employeeCount)
-              : undefined,
+            ...(await this.pickSupportedFields('CompanyUpdateInput', {
+              employees: companyData.employeeCount
+                ? this.parseEmployeeCount(companyData.employeeCount)
+                : undefined,
+            })),
           },
         }
       );
@@ -959,277 +1042,13 @@ export class TwentyApiClient {
   }
 }
 
-// Helper to extract token from Twenty's tokenPair cookie
-export function extractTokenFromCookie(
-  cookieValue: string
-): string | null {
-  const isLikelyJwt = (value: string): boolean =>
-    /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value);
-
-  const now = Date.now();
-  const expirySkewMs = 30 * 1000;
-
-  const normalizeTokenValue = (value: string): string => {
-    const trimmed = value.trim().replace(/^"+|"+$/g, '');
-    return trimmed.startsWith('Bearer ') ? trimmed.slice(7).trim() : trimmed;
-  };
-
-  const tryDecode = (value: string): string => {
-    let current = value;
-    for (let i = 0; i < 2; i += 1) {
-      try {
-        const decoded = decodeURIComponent(current);
-        if (decoded === current) {
-          break;
-        }
-        current = decoded;
-      } catch {
-        break;
-      }
-    }
-    return current;
-  };
-
-  type TokenCandidate = {
-    source: 'known' | 'discovered';
-    path: string;
-    value: string;
-    expiresAtMs?: number;
-    score: number;
-  };
-
-  const parseExpiryDate = (rawValue: unknown): number | undefined => {
-    if (typeof rawValue !== 'string' || !rawValue.trim()) {
-      return undefined;
-    }
-
-    const parsed = Date.parse(rawValue);
-    return Number.isNaN(parsed) ? undefined : parsed;
-  };
-
-  const parseJwtExp = (token: string): number | undefined => {
-    if (!isLikelyJwt(token)) {
-      return undefined;
-    }
-
-    try {
-      const payloadBase64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-      const padded = payloadBase64.padEnd(Math.ceil(payloadBase64.length / 4) * 4, '=');
-      const payloadRaw = atob(padded);
-      const payload = JSON.parse(payloadRaw) as { exp?: unknown };
-      if (typeof payload.exp !== 'number') {
-        return undefined;
-      }
-      return payload.exp * 1000;
-    } catch {
-      return undefined;
-    }
-  };
-
-  const isExpired = (candidate: Pick<TokenCandidate, 'expiresAtMs' | 'value'>): boolean => {
-    const expiry = candidate.expiresAtMs ?? parseJwtExp(candidate.value);
-    if (!expiry) return false;
-    return expiry <= now + expirySkewMs;
-  };
-
-  const scoreCandidate = (
-    candidate: Omit<TokenCandidate, 'score'>,
-    baseScore = 0
-  ): number => {
-    const path = candidate.path.toLowerCase();
-    let score = baseScore;
-
-    if (path.includes('accessorworkspaceagnostictoken')) score += 220;
-    if (path.includes('workspaceaccesstoken')) score += 180;
-    if (path.includes('accesstoken')) score += 160;
-    if (path.includes('access')) score += 70;
-    if (path.endsWith('.token') || path === 'token') score += 30;
-
-    if (path.includes('refresh')) score -= 260;
-    if (path.includes('csrf') || path.includes('session')) score -= 140;
-
-    if (isLikelyJwt(candidate.value)) {
-      score += 45;
-    } else if (candidate.value.length >= 24) {
-      score += 10;
-    } else {
-      score -= 35;
-    }
-
-    if (isExpired(candidate)) {
-      score -= 500;
-    } else {
-      score += 35;
-    }
-
-    return score;
-  };
-
-  const findTokenCandidates = (input: unknown): TokenCandidate[] => {
-    if (!input) {
-      return [];
-    }
-
-    const candidates: Array<Omit<TokenCandidate, 'score'>> = [];
-    const stack: Array<{ value: unknown; path: string }> = [{ value: input, path: '' }];
-
-    while (stack.length > 0) {
-      const entry = stack.pop();
-      if (!entry) {
-        continue;
-      }
-
-      if (typeof entry.value === 'string') {
-        const normalized = normalizeTokenValue(entry.value);
-        if (normalized) {
-          candidates.push({
-            source: 'discovered',
-            path: entry.path,
-            value: normalized,
-          });
-        }
-        continue;
-      }
-
-      if (!entry.value || typeof entry.value !== 'object') {
-        continue;
-      }
-
-      for (const [key, value] of Object.entries(entry.value as Record<string, unknown>)) {
-        const nextPath = entry.path ? `${entry.path}.${key}` : key;
-        if (typeof value === 'string') {
-          const normalized = normalizeTokenValue(value);
-          if (normalized && key.toLowerCase().includes('token')) {
-            const parent = entry.value as Record<string, unknown>;
-            candidates.push({
-              source: 'discovered',
-              path: nextPath,
-              value: normalized,
-              expiresAtMs: parseExpiryDate(parent.expiresAt),
-            });
-          }
-        } else if (value && typeof value === 'object') {
-          stack.push({ value, path: nextPath });
-        }
-      }
-    }
-
-    return candidates.map((candidate) => ({
-      ...candidate,
-      score: scoreCandidate(candidate),
-    }));
-  };
-
-  const normalizedCookie = tryDecode(cookieValue).trim();
-  if (!normalizedCookie) {
+// Twenty API keys are JWTs. Accept a pasted "Bearer <key>" too and reject anything with whitespace.
+export function normalizeApiKey(value: string): string | null {
+  const trimmed = value.trim().replace(/^Bearer\s+/i, '').trim();
+  if (!trimmed || /\s/.test(trimmed)) {
     return null;
   }
-
-  // Sometimes cookie value is directly a JWT token.
-  const directToken = normalizeTokenValue(normalizedCookie);
-  if (isLikelyJwt(directToken) && !isExpired({ value: directToken })) {
-    return directToken;
-  }
-
-  try {
-    const tokenPair = JSON.parse(normalizedCookie) as TwentyTokenPair & Record<string, unknown>;
-
-    const knownCandidates: TokenCandidate[] = [];
-    const pushKnown = (
-      path: string,
-      rawToken: unknown,
-      rawExpiry: unknown,
-      baseScore: number
-    ) => {
-      if (typeof rawToken !== 'string') return;
-      const normalized = normalizeTokenValue(rawToken);
-      if (!normalized) return;
-
-      const candidateBase = {
-        source: 'known' as const,
-        path,
-        value: normalized,
-        expiresAtMs: parseExpiryDate(rawExpiry),
-      };
-      knownCandidates.push({
-        ...candidateBase,
-        score: scoreCandidate(candidateBase, baseScore),
-      });
-    };
-
-    pushKnown(
-      'accessOrWorkspaceAgnosticToken.token',
-      tokenPair.accessOrWorkspaceAgnosticToken?.token,
-      tokenPair.accessOrWorkspaceAgnosticToken?.expiresAt,
-      600
-    );
-    pushKnown(
-      'workspaceAccessToken.token',
-      tokenPair.workspaceAccessToken?.token,
-      tokenPair.workspaceAccessToken?.expiresAt,
-      560
-    );
-    pushKnown(
-      'accessToken.token',
-      tokenPair.accessToken?.token,
-      tokenPair.accessToken?.expiresAt,
-      520
-    );
-    pushKnown(
-      'accessOrWorkspaceAgnosticToken',
-      typeof tokenPair.accessOrWorkspaceAgnosticToken === 'string'
-        ? tokenPair.accessOrWorkspaceAgnosticToken
-        : undefined,
-      undefined,
-      500
-    );
-    pushKnown(
-      'workspaceAccessToken',
-      typeof tokenPair.workspaceAccessToken === 'string'
-        ? tokenPair.workspaceAccessToken
-        : undefined,
-      undefined,
-      470
-    );
-    pushKnown(
-      'accessToken',
-      typeof tokenPair.accessToken === 'string' ? tokenPair.accessToken : undefined,
-      undefined,
-      440
-    );
-    pushKnown('token', typeof tokenPair.token === 'string' ? tokenPair.token : undefined, undefined, 300);
-
-    // Fallback for unknown tokenPair variants.
-    const discovered = findTokenCandidates(tokenPair);
-    const combined = [...knownCandidates, ...discovered];
-    if (combined.length === 0) {
-      return null;
-    }
-
-    // Deduplicate by token value, keeping the best-scored variant.
-    const deduped = new Map<string, TokenCandidate>();
-    for (const candidate of combined) {
-      const existing = deduped.get(candidate.value);
-      if (!existing || candidate.score > existing.score) {
-        deduped.set(candidate.value, candidate);
-      }
-    }
-
-    const sorted = Array.from(deduped.values()).sort((a, b) => b.score - a.score);
-    const nonExpired = sorted.filter((candidate) => !isExpired(candidate));
-
-    if (nonExpired.length > 0 && nonExpired[0].score > 0) {
-      return nonExpired[0].value;
-    }
-
-    const best = sorted[0];
-    if (!best || best.score <= 0) {
-      return null;
-    }
-    return best.value;
-  } catch {
-    return null;
-  }
+  return trimmed;
 }
 
 export function isTwentyAuthErrorMessage(message: string): boolean {
@@ -1243,5 +1062,6 @@ export function isTwentyAuthErrorMessage(message: string): boolean {
     || normalized.includes('access denied')
     || normalized.includes('expired')
     || normalized.includes('session')
+    || normalized.includes('api key')
     || normalized.includes('not logged in');
 }

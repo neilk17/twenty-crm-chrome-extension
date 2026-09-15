@@ -17,8 +17,9 @@ Install this Chrome extension and manage your Twenty CRM workspace from Linkedin
 5. Enable **Developer mode** (toggle top right)
 6. Click **Load unpacked** → select the **unzipped folder** (the one containing `manifest.json`)
 7. Click the extension icon and enter your Twenty CRM URL
+8. In Twenty, open **Settings → APIs & Webhooks**, create an API key, and paste it into the extension
 
-> **Note**: You must be logged into your Twenty CRM in the same browser for the extension to work.
+> **Note**: The extension authenticates with a Twenty API key. Being signed in to Twenty in the browser is no longer enough: Twenty stores its session in an httpOnly cookie that only the Twenty web app itself may use.
 >
 > **Tip**: After unzipping, verify the folder contains `manifest.json` at the root level, not inside a subfolder.
 
