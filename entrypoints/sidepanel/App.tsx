@@ -212,6 +212,22 @@ export default function App() {
 		);
 	}
 
+	async function hasTwentyPermission(urlValue: string): Promise<boolean> {
+		const origins = getTwentyOriginPatterns(urlValue);
+		if (origins.length === 0) {
+			return false;
+		}
+
+		try {
+			return await browser.permissions.contains({ origins });
+		} catch (err) {
+			console.error("Error checking permission:", err);
+			return false;
+		}
+	}
+
+	// Chrome only grants permissions.request() inside a user gesture, so this
+	// must be called from a click handler, never from an automatic refresh.
 	async function ensureTwentyPermission(urlValue: string): Promise<boolean> {
 		const origins = getTwentyOriginPatterns(urlValue);
 		if (origins.length === 0) {
@@ -219,8 +235,7 @@ export default function App() {
 		}
 
 		try {
-			const hasPermission = await browser.permissions.contains({ origins });
-			if (hasPermission) {
+			if (await browser.permissions.contains({ origins })) {
 				return true;
 			}
 			return await browser.permissions.request({ origins });
@@ -792,7 +807,10 @@ export default function App() {
 				setSuccess(null);
 
 				if (normalizedTwentyUrl && savedApiKey && !invalidTwentyUrl) {
-					await testConnection(normalizedTwentyUrl, { showSuccess: false });
+					await testConnection(normalizedTwentyUrl, {
+						showSuccess: false,
+						interactive: false,
+					});
 				} else {
 					setIsConnected(false);
 				}
@@ -927,7 +945,7 @@ export default function App() {
 
 	async function testConnection(
 		urlOverride?: string,
-		options?: { showSuccess?: boolean },
+		options?: { showSuccess?: boolean; interactive?: boolean },
 	) {
 		const targetUrl = normalizeTwentyUrl(urlOverride || savedTwentyUrl);
 		if (!targetUrl) {
@@ -941,10 +959,17 @@ export default function App() {
 		setError(null);
 
 		try {
-			const hasPermission = await ensureTwentyPermission(targetUrl);
+			// Only a click may open the permission prompt; an automatic check just
+			// reports that access is still needed.
+			const hasPermission = options?.interactive === false
+				? await hasTwentyPermission(targetUrl)
+				: await ensureTwentyPermission(targetUrl);
+
 			if (!hasPermission) {
 				setError(
-					"Permission denied. Please allow access to your Twenty domain.",
+					options?.interactive === false
+						? "Click Test Connection to allow access to your Twenty domain."
+						: "Permission denied. Please allow access to your Twenty domain.",
 				);
 				setIsConnected(false);
 				return;

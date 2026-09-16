@@ -2,6 +2,22 @@
 
 All notable changes to Twenty CRM LinkedIn Capture Extension.
 
+## [1.0.15] - 2026-09-16
+
+### 🔐 Permissions
+
+- The manifest no longer declares any optional host permissions. Access to your
+  Twenty instance is requested at runtime for that one origin when you save its
+  URL, so the extension never declares access to all sites. This also avoids the
+  extended Chrome Web Store review that broad host access triggers.
+
+### 🐛 Fixes
+
+- The automatic connection check no longer tries to open a permission prompt.
+  Chrome only allows that from a click, so the prompt now appears when you save
+  the URL or press Test Connection, and the automatic check reports that access
+  is still needed instead of silently failing.
+
 ## [1.0.14] - 2026-09-16
 
 ### 🔐 Permissions

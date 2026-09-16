@@ -1,7 +1,7 @@
 import { defineConfig } from 'wxt';
 
 const buildChannel = process.env.BUILD_CHANNEL === 'beta' ? 'beta' : 'stable';
-const extensionVersion = '1.0.14';
+const extensionVersion = '1.0.15';
 const isBeta = buildChannel === 'beta';
 
 export default defineConfig({
@@ -40,12 +40,16 @@ export default defineConfig({
       "https://media.licdn.com/*",
     ],
 
-    // The user's Twenty instance only. Requested at runtime once they enter
-    // their URL, so the extension never asks for access to every site.
-    optional_host_permissions: [
-      "https://*/*",
-      "http://*/*"
-    ],
+    // No optional host patterns are declared. Twenty is self-hosted at arbitrary
+    // domains, so the extension cannot enumerate them ahead of time, and any
+    // pattern broad enough to cover them would amount to all-sites access.
+    // Instead it asks for the single origin the user enters, at runtime, via
+    // permissions.request(). Chrome allows this for origins not listed in the
+    // manifest as long as the request is driven by a user gesture.
+    //
+    // The store surfaces optional_host_permissions as broad host access and
+    // flags it for in-depth review; requesting at runtime keeps the declared
+    // scope to LinkedIn only.
 
     action: {}
   }
