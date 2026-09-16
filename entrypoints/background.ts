@@ -425,37 +425,6 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
         }
       }
 
-      case 'GET_DOMAIN_FROM_PAGE': {
-        const { tabId } = message.payload as { tabId: number };
-        try {
-          // Try to get domain from content script first
-          try {
-            const response = await browser.tabs.sendMessage(tabId, {
-              type: 'GET_DOMAIN_FROM_PAGE',
-            });
-            if (response && response.success) {
-              return { success: true, data: response.data };
-            }
-          } catch (e) {
-            // Content script might not be loaded, fall back to extracting from tab URL
-            console.log('Could not get domain from content script, extracting from tab URL');
-          }
-
-          // Fallback: extract domain from tab URL
-          const tab = await browser.tabs.get(tabId);
-          if (tab.url) {
-            const domain = getNormalizedDomain(tab.url);
-            if (domain) {
-              return { success: true, data: { domain, url: tab.url } };
-            }
-          }
-          return { success: false, error: 'Could not extract domain from URL' };
-        } catch (error) {
-          console.error('Error getting domain from page:', error);
-          return { success: false, error: 'Could not access page' };
-        }
-      }
-
       case 'CHECK_DUPLICATE_BY_DOMAIN': {
         const { domain } = message.payload as { domain: string };
         const result = await checkCompanyDuplicateByDomain(domain);

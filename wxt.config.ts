@@ -1,7 +1,7 @@
 import { defineConfig } from 'wxt';
 
 const buildChannel = process.env.BUILD_CHANNEL === 'beta' ? 'beta' : 'stable';
-const extensionVersion = '1.0.13';
+const extensionVersion = '1.0.14';
 const isBeta = buildChannel === 'beta';
 
 export default defineConfig({
@@ -25,18 +25,26 @@ export default defineConfig({
 
     permissions: [
       "activeTab",
-      "storage"
+      "storage",
+      // Reads the active tab's URL to detect LinkedIn pages and derive a company
+      // domain. Does NOT grant access to page content, unlike a host permission.
+      "tabs"
     ],
 
-    // Only request LinkedIn access upfront
+    // Only request LinkedIn access upfront. media.licdn.com is LinkedIn's image
+    // CDN: the background script fetches profile photos from it to upload them
+    // to Twenty.
     host_permissions: [
       "https://www.linkedin.com/*",
       "https://linkedin.com/*",
+      "https://media.licdn.com/*",
     ],
 
-    // CRM domain access can be requested at runtime
+    // The user's Twenty instance only. Requested at runtime once they enter
+    // their URL, so the extension never asks for access to every site.
     optional_host_permissions: [
-      "*://*/*"
+      "https://*/*",
+      "http://*/*"
     ],
 
     action: {}

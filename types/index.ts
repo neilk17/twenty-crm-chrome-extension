@@ -96,8 +96,7 @@ export type MessageType =
   | 'SAVE_SETTINGS'
   | 'TEST_CONNECTION'
   | 'GET_RECENT_CAPTURES'
-  | 'SCRAPE_PAGE'
-  | 'GET_DOMAIN_FROM_PAGE';
+  | 'SCRAPE_PAGE';
 
 export type ExtensionMessage = {
   type: MessageType;

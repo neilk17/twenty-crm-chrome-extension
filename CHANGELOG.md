@@ -2,6 +2,20 @@
 
 All notable changes to Twenty CRM LinkedIn Capture Extension.
 
+## [1.0.14] - 2026-09-16
+
+### 🔐 Permissions
+
+- **No longer requests access to every website.** The optional `*://*/*` host
+  permission is replaced by a request scoped to your own Twenty instance, made
+  once you enter its URL. The extension reads the active tab's address via the
+  `tabs` permission, which does not grant access to page content.
+- Content scripts now inject only on LinkedIn profile and company pages. The
+  previous build injected a script into every page you visited, which was used
+  only to read the page's own URL.
+- Added `media.licdn.com` so profile photo uploads keep working without
+  all-sites access.
+
 ## [1.0.13] - 2026-09-15
 
 ### 🔒 Security
